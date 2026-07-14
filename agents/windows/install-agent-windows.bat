@@ -14,6 +14,11 @@ set "INSTALL_DIR=C:\SmartMonitor"
 set "PS_SRC=%~dp0smartmonitor-push.ps1"
 set "PS_DEST=%INSTALL_DIR%\smartmonitor-push.ps1"
 
+REM IP o dominio del servidor SmartMonitor: uso "install-agent-windows.bat <IP_SERVIDOR>"
+REM Si no se pasa nada, usa la IP anterior por compatibilidad con instalaciones existentes.
+set "SERVER_IP=%~1"
+if "%SERVER_IP%"=="" set "SERVER_IP=172.27.142.107"
+
 if not exist "%PS_SRC%" (
     echo [ERROR] No se encuentra smartmonitor-push.ps1 en la misma carpeta.
     pause
@@ -58,6 +63,13 @@ if not exist "%INSTALL_DIR%" (
 copy /Y "%PS_SRC%" "%PS_DEST%" >nul
 echo [OK] Agente copiado a %PS_DEST%
 
+REM Inyectar la IP/dominio del servidor en el script copiado (igual que el
+REM instalador de Linux hace con sed): reemplazo literal de la IP por defecto
+REM en todas sus apariciones (linea de $SERVER y la de espera de red), asi
+REM se evita lidiar con comillas anidadas entre cmd y PowerShell.
+powershell -ExecutionPolicy Bypass -Command "(Get-Content -Raw '%PS_DEST%').Replace('172.27.142.107', '%SERVER_IP%') | Set-Content -Path '%PS_DEST%' -Encoding UTF8"
+echo [OK] Servidor configurado: http://%SERVER_IP%:8000
+
 REM Ocultar carpeta
 attrib +H "%INSTALL_DIR%" >nul 2>&1
 
@@ -66,12 +78,12 @@ echo [OK] Politica de ejecucion configurada
 
 echo.
 echo Probando conexion con el servidor...
-powershell -ExecutionPolicy Bypass -Command "try{Invoke-WebRequest 'http://172.27.142.107:8000' -TimeoutSec 5 -UseBasicParsing | Out-Null; Write-Host '[OK] Servidor accesible'}catch{Write-Host '[WARN] No se pudo conectar al servidor.'}"
+powershell -ExecutionPolicy Bypass -Command "try{Invoke-WebRequest 'http://%SERVER_IP%:8000' -TimeoutSec 5 -UseBasicParsing | Out-Null; Write-Host '[OK] Servidor accesible'}catch{Write-Host '[WARN] No se pudo conectar al servidor.'}"
 
 echo.
 echo Instalando certificado de la CA del servidor (para que la pagina de bloqueo se vea tambien en sitios HTTPS)...
 powershell -ExecutionPolicy Bypass -Command ^
-    "try { $r = Invoke-WebRequest 'http://172.27.142.107/smartmonitor-ca.crt' -TimeoutSec 5 -UseBasicParsing;" ^
+    "try { $r = Invoke-WebRequest 'http://%SERVER_IP%/smartmonitor-ca.crt' -TimeoutSec 5 -UseBasicParsing;" ^
     " $path = 'C:\SmartMonitor\smartmonitor-ca.crt'; [IO.File]::WriteAllBytes($path, $r.Content);" ^
     " Import-Certificate -FilePath $path -CertStoreLocation Cert:\LocalMachine\Root | Out-Null;" ^
     " Write-Host '[OK] CA instalada en el almacen de confianza (Chrome/Edge la heredan)' }" ^

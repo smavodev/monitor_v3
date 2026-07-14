@@ -54,8 +54,40 @@ def _server_dns_ip():
     m = re.search(r"https?://([^:/]+)", SERVER)
     return m.group(1) if m else SERVER
 
+def _nm_active_connections():
+    """Nombres de las conexiones activas de NetworkManager (una por interfaz
+    con red real; se listan aparte las de docker/bridges que no aplican)."""
+    if not (sh("command -v nmcli") and sh("systemctl is-active NetworkManager") == "active"):
+        return []
+    out = sh("nmcli -t -f NAME,DEVICE connection show --active")
+    names = []
+    for line in out.splitlines():
+        if not line.strip():
+            continue
+        name, _, device = line.partition(":")
+        if device and not device.startswith(("docker", "br-", "veth", "lo")):
+            names.append(name)
+    return names
+
 def set_central_dns():
     ip = _server_dns_ip()
+    conns = _nm_active_connections()
+    if conns:
+        # Con NetworkManager activo, editar /etc/resolv.conf a mano es una
+        # pelea perdida: NM lo regenera y, peor, si no se limpia bien lo
+        # anterior en cada ciclo (como pasaba antes) el archivo acumula
+        # nameservers duplicados hasta que el nuestro queda más allá del
+        # límite de 3 que usa glibc y nunca se llega a usar. nmcli es la
+        # forma correcta de fijar el DNS por conexión, y ya es idempotente
+        # (no reconecta si el valor no cambió).
+        for name in conns:
+            current = sh(f'nmcli -g ipv4.dns connection show "{name}"').strip()
+            if current == ip:
+                continue
+            sh(f'nmcli connection modify "{name}" ipv4.dns "{ip}" ipv4.ignore-auto-dns yes '
+               f'ipv6.ignore-auto-dns yes 2>/dev/null')
+            sh(f'nmcli connection up "{name}" 2>/dev/null')
+        return
     try:
         if sh("command -v resolvectl") or sh("command -v systemd-resolve"):
             sh(f"resolvectl dns * {ip} 2>/dev/null")
@@ -67,16 +99,30 @@ def set_central_dns():
         lines = []
         if os.path.exists(RESOLV_CONF):
             with open(RESOLV_CONF) as f:
+                # Se descarta CUALQUIER nameserver previo (no solo el marcador
+                # o 127.0.0.1): si no, cada ciclo de 10s acumula uno más hasta
+                # superar el límite de 3 nameservers de glibc y el nuestro
+                # nunca llega a usarse de verdad.
                 lines = [l for l in f.read().splitlines()
-                         if l.strip() != CENTRAL_DNS_MARKER and not l.strip().startswith("nameserver 127.0.0.1")]
+                         if l.strip() != CENTRAL_DNS_MARKER and not l.strip().startswith("nameserver")]
         lines.insert(0, CENTRAL_DNS_MARKER)
-        lines.append(f"nameserver {ip}")
+        lines.insert(1, f"nameserver {ip}")
         with open(RESOLV_CONF, "w") as f:
             f.write("\n".join(lines) + "\n")
     except Exception as e:
         print(f"WARN: no se pudo apuntar el DNS al server: {e}")
 
 def restore_dns_central():
+    conns = _nm_active_connections()
+    if conns:
+        for name in conns:
+            current = sh(f'nmcli -g ipv4.dns connection show "{name}"').strip()
+            if not current:
+                continue
+            sh(f'nmcli connection modify "{name}" ipv4.dns "" ipv4.ignore-auto-dns no '
+               f'ipv6.ignore-auto-dns no 2>/dev/null')
+            sh(f'nmcli connection up "{name}" 2>/dev/null')
+        return
     try:
         if sh("command -v resolvectl") or sh("command -v systemd-resolve"):
             sh("resolvectl revert * 2>/dev/null")
