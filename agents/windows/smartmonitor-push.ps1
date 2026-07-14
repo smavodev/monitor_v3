@@ -16,6 +16,11 @@ function Write-Log($msg) {
 }
 
 Write-Log "=== SmartMonitor iniciando (usuario: $([System.Security.Principal.WindowsIdentity]::GetCurrent().Name)) ==="
+# Server y hostname bien visibles en la primera linea del log: si el agente
+# alguna vez queda apuntando al servidor equivocado (ej. una reinstalacion que
+# no reemplazo el archivo de verdad, como paso una vez), esto lo delata de
+# inmediato sin tener que diagnosticar por SSH cuanto trafico llega a cada server.
+Write-Log "Servidor configurado: $SERVER | Hostname: $HOSTNAME_PC"
 
 # Esperar a que la red este lista al arrancar como servicio
 $maxWait = 60

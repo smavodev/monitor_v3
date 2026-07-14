@@ -453,6 +453,13 @@ def send_once():
 # de varios minutos) configurado para el reporte de métricas.
 BLOCKLIST_POLL_SEC = 10
 
+# Server y hostname bien visibles al arrancar: si el agente alguna vez queda
+# apuntando al servidor equivocado (ej. una reinstalación que no reemplazó el
+# archivo de verdad, como pasó una vez), esto lo delata de inmediato con
+# 'journalctl -u smartmonitor-agent' sin tener que diagnosticar por SSH
+# cuánto tráfico llega a cada server.
+print(f"Servidor configurado: {SERVER} | Hostname: {HOSTNAME}")
+
 # Fase 2: cerrar la via de DoH para que el DNS central se use de verdad
 disable_browser_doh_linux()
 block_doh_endpoints_linux()

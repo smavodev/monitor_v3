@@ -38,9 +38,18 @@ REM 2) Quitar autoinicio en el registro
 powershell -ExecutionPolicy Bypass -Command "Remove-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run' -Name 'SmartMonitor' -ErrorAction SilentlyContinue" >nul 2>&1
 echo [OK] Clave de autoinicio eliminada
 
-REM 3) Matar cualquier proceso del agente que quede vivo (libera el .ps1)
-powershell -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*smartmonitor-push.ps1*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }" >nul 2>&1
-echo [OK] Procesos previos detenidos
+REM 3) Matar cualquier proceso del agente que quede vivo (libera el .ps1).
+REM Se reintenta y se verifica: una vez pasó que el proceso viejo seguia vivo
+REM con la config anterior cargada en memoria mientras la tarea programada ya
+REM apuntaba a la nueva, y el log mezclaba ambos sin ningun error visible.
+powershell -ExecutionPolicy Bypass -Command ^
+    "for ($i = 0; $i -lt 3; $i++) {" ^
+    " $procs = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*smartmonitor-push.ps1*' };" ^
+    " if (-not $procs) { break };" ^
+    " $procs | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue };" ^
+    " Start-Sleep -Milliseconds 500 }" ^
+    " $left = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*smartmonitor-push.ps1*' };" ^
+    " if ($left) { Write-Host '[WARN] Sigue vivo un proceso del agente anterior (PID' $left.ProcessId ') - revisa manualmente' } else { Write-Host '[OK] Procesos previos detenidos' }"
 
 REM 4) Restaurar el DNS del sistema si el agente lo habia tomado (127.0.0.1)
 powershell -ExecutionPolicy Bypass -Command "$adapters = Get-DnsClientServerAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.ServerAddresses -contains '127.0.0.1' }; foreach ($a in $adapters) { try { Set-DnsClientServerAddress -InterfaceIndex $a.InterfaceIndex -ResetServerAddresses } catch {} }" >nul 2>&1
@@ -103,6 +112,17 @@ if %errorlevel% equ 0 (
 
 schtasks /run /tn "SmartMonitor" >nul 2>&1
 echo [OK] Agente iniciado
+
+REM Verificacion final: mostrar el SERVER que de verdad quedo en el archivo
+REM instalado (no el que se pidio) - un reemplazo silenciosamente fallido
+REM (o una copia vieja de este instalador) se nota en el momento y no hay
+REM que diagnosticarlo despues por SSH viendo a que servidor llega el trafico.
+echo.
+echo Verificando configuracion final...
+powershell -ExecutionPolicy Bypass -Command ^
+    "$line = (Get-Content 'C:\SmartMonitor\smartmonitor-push.ps1' | Select-String '^\$SERVER').ToString();" ^
+    " Write-Host ('  Servidor configurado (verificado en el archivo instalado): ' + $line);" ^
+    " if ($line -notmatch [regex]::Escape('%SERVER_IP%')) { Write-Host '  [ADVERTENCIA] No coincide con la IP pedida (%SERVER_IP%). Revisa el archivo manualmente.' }"
 
 echo.
 echo  Instalacion completada.

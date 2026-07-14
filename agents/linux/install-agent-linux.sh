@@ -105,8 +105,17 @@ systemctl enable smartmonitor-agent --quiet
 systemctl start smartmonitor-agent
 ok "Servicio smartmonitor-agent iniciado y habilitado"
 
+# Verificación final: mostrar el SERVER que de verdad quedó en el archivo
+# instalado, no el que se pidió — así un fallo silencioso del sed (o una
+# copia vieja del instalador) se nota en el momento y no hay que
+# diagnosticarlo después por SSH viendo a qué servidor llega el tráfico.
+DEPLOYED_SERVER="$(grep '^SERVER' "$AGENT_DEST" | head -1)"
 echo ""
 echo -e "${BOLD}${GREEN}Agente activo.${NC} Datos visibles en el dashboard en ~30s"
+echo -e "  Servidor configurado (verificado en el archivo instalado): ${CYAN}${DEPLOYED_SERVER}${NC}"
+if [[ "$DEPLOYED_SERVER" != *"$SERVER_IP"* ]]; then
+    echo -e "  ${RED}⚠ ADVERTENCIA: no coincide con la IP pedida (${SERVER_IP}). Revisa el archivo.${NC}"
+fi
 echo -e "  Estado: ${CYAN}systemctl status smartmonitor-agent${NC}"
 echo -e "  Logs:   ${CYAN}journalctl -u smartmonitor-agent -f${NC}"
 echo ""
