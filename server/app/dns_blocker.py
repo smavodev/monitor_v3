@@ -286,6 +286,14 @@ Si consideras que esto es un error, contacta al administrador del sistema.
 
 CA_CERT_PATH = "/smartmonitor-ca.crt"  # ruta fija para que el agente la descargue e instale
 
+# Dominio propio del panel admin (ej. monitoreo.smarthrlatam.com), si el
+# despliegue tiene uno (ver DNS_BLOCK_HTTPS_BIND / nginx SNI en EC2). Una
+# petición HTTP (:80, sin cifrar) a ese Host se redirige a HTTPS en vez de
+# mostrar la página de bloqueo — si no, entrar por http:// al dominio del
+# panel (en vez de https://) mostraría el bloqueo por error, ya que el :80
+# no distingue de quién es la solicitud, solo bloquea.
+ADMIN_PANEL_DOMAIN = os.getenv("ADMIN_PANEL_DOMAIN")
+
 
 class _BlockHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -295,6 +303,12 @@ class _BlockHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Disposition", "attachment; filename=smartmonitor-ca.crt")
             self.end_headers()
             self.wfile.write(tls_ca.ca_cert_pem())
+            return
+        host = (self.headers.get("Host") or "").split(":")[0].strip().lower()
+        if ADMIN_PANEL_DOMAIN and host == ADMIN_PANEL_DOMAIN.lower():
+            self.send_response(301)
+            self.send_header("Location", f"https://{ADMIN_PANEL_DOMAIN}{self.path}")
+            self.end_headers()
             return
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
