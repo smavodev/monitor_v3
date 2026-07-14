@@ -5,14 +5,12 @@ from pathlib import Path
 import os, threading, time as _time
 
 from core.db import engine, get_db, hash_password, Session as DBSession
-from models.models import Base, User, ServiceCheck
-from routers import auth, agents, sedes, config, alerts, services, discovery, reports
-from routers import notifications, tags, status_pages, maintenance, proxies, blocked_sites, block_schedules, block_reports, network_gate, block_attempts
+from models.models import Base, User
+from routers import auth, agents, sedes, config, alerts, discovery, reports
+from routers import blocked_sites, block_schedules, block_reports, network_gate, block_attempts
 from routers import roles
-from routers.services import run_check_and_save
 from dns_blocker import start_dns_blocker
 from sqlalchemy.orm import Session
-from datetime import datetime
 
 app = FastAPI(title="SmartMonitor v3", docs_url=None, redoc_url=None)
 
@@ -116,26 +114,17 @@ def startup():
     except Exception as e:
         print(f"[DNSBlocker] No se inicio el bloqueo DNS central: {e}")
 
-    threading.Thread(target=_service_scheduler, daemon=True).start()
+    threading.Thread(target=_background_scheduler, daemon=True).start()
 
-# ── Service auto-scheduler ─────────────────────────────────────────────────
+# ── Chequeo periódico de equipos offline + purga de intentos vencidos ───────
 _last_attempt_purge = 0.0
 
-def _service_scheduler():
+def _background_scheduler():
     global _last_attempt_purge
     _time.sleep(15)  # esperar inicio completo
     while True:
         try:
             db = DBSession()
-            now = datetime.utcnow()
-            svcs = db.query(ServiceCheck).filter(ServiceCheck.active == True).all()
-            for svc in svcs:
-                elapsed = (now - svc.last_check).total_seconds() if svc.last_check else float("inf")
-                if elapsed >= svc.interval_sec:
-                    try:
-                        run_check_and_save(db, svc)
-                    except Exception as e:
-                        print(f"[SvcCheck] {svc.name}: {e}")
             if _time.time() - _last_attempt_purge >= 3600:
                 try:
                     block_attempts.purge_expired(db)
@@ -148,7 +137,7 @@ def _service_scheduler():
                 print(f"[CheckOffline] {e}")
             db.close()
         except Exception as e:
-            print(f"[SvcScheduler] {e}")
+            print(f"[BackgroundScheduler] {e}")
         _time.sleep(15)
 
 # ── Routers ────────────────────────────────────────────────────────────────
@@ -158,14 +147,8 @@ app.include_router(agents.router)
 app.include_router(sedes.router)
 app.include_router(config.router)
 app.include_router(alerts.router)
-app.include_router(services.router)
 app.include_router(discovery.router)
 app.include_router(reports.router)
-app.include_router(notifications.router)
-app.include_router(tags.router)
-app.include_router(status_pages.router)
-app.include_router(maintenance.router)
-app.include_router(proxies.router)
 app.include_router(blocked_sites.router)
 app.include_router(block_schedules.router)
 app.include_router(block_reports.router)

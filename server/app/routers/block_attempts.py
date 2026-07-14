@@ -1,10 +1,10 @@
 from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional
 from datetime import timedelta
 
-from core.db import get_db, get_current_user
+from core.db import get_db
 from core.permissions import require_permission
 from models.models import BlockAttempt, BlockAttemptConfig, Agent, Sede, BlockedSite
 from routers.block_schedules import _local_now
@@ -27,20 +27,10 @@ def purge_expired(db: Session):
     db.query(BlockAttempt).filter(BlockAttempt.date < cutoff).delete()
     db.commit()
 
-class AttemptEntry(BaseModel):
-    domain: str
-    count: int
-    blocked: bool = True  # False = dominio de la config que se dejó pasar (excepción/horario/red)
-
-class AttemptsPayload(BaseModel):
-    hostname: str
-    attempts: List[AttemptEntry] = []
-
 def upsert_attempts(db: Session, agent_id: str, entries, now=None):
     """Inserta/incrementa filas de BlockAttempt. `entries` es un iterable de
-    tuplas (domain, count, blocked). Compartida entre el endpoint HTTP (legado,
-    por si algún agente viejo todavía la usa) y el registro interno que hace
-    dns_blocker.py al resolver DNS, que es la fuente de verdad actual."""
+    tuplas (domain, count, blocked). La usa dns_blocker.py al resolver DNS,
+    que es la fuente de verdad de los intentos de acceso."""
     now = now or _local_now(None)
     today = now.date()
     for domain, count, blocked in entries:
@@ -58,18 +48,6 @@ def upsert_attempts(db: Session, agent_id: str, entries, now=None):
         else:
             db.add(BlockAttempt(agent_id=agent_id, domain=domain, date=today,
                                  blocked=blocked, count=count, last_seen=now))
-
-# ── Reportado por el agente (legado; los agentes actuales ya no bloquean
-# localmente así que no llaman este endpoint, pero se deja por compatibilidad
-# hacia atrás con agentes viejos que sigan corriendo) ───────────────────────
-@router.post("/agents/block-attempts")
-def report_block_attempts(payload: AttemptsPayload, db: Session = Depends(get_db)):
-    agent = db.query(Agent).filter(Agent.hostname == payload.hostname).first()
-    if not agent:
-        return {"ok": False}
-    upsert_attempts(db, agent.id, [(e.domain, e.count, e.blocked) for e in payload.attempts])
-    db.commit()
-    return {"ok": True}
 
 def _find_exception(domain: str, agent: Optional[Agent], exceptions: list):
     """De las excepciones vigentes, busca la que probablemente dejó pasar este

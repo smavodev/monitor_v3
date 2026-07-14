@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional
 import re
-from core.db import get_db, get_current_user
+from core.db import get_db
 from core.permissions import require_permission
 from models.models import BlockedSite, Agent, BlockCategory, Sede
 from routers.block_schedules import _local_now, _parse_expires

@@ -9,14 +9,12 @@ import asyncio, json, urllib.request, urllib.parse
 from core.db import get_db, get_user_from_token_param
 from core.permissions import require_permission
 from core.notify import send_email_silent
-from models.models import Agent, Metric, Disk, Event, Sede, AlertConfig, BlockedSite, AgentChangeLog, AssignmentLog, User
+from models.models import Agent, Metric, Disk, Event, AlertConfig, BlockedSite, AgentChangeLog, AssignmentLog, User
 from routers.block_schedules import resolve_schedule_for_agent, is_within_schedule
 from routers.blocked_sites import resolve_domains_for_agent, resolve_all_configured_domains
 from routers.network_gate import is_network_allowed
 
 router = APIRouter(prefix="/api/agents", tags=["agents"])
-
-import os
 
 def _send_telegram(text: str):
     try:
@@ -165,7 +163,6 @@ def receive_metrics(payload: MetricPayload, request: Request, db: Session = Depe
             agent.device_type = payload.device_type
 
     agent.ip = request.client.host if request.client else None
-    prev_status = agent.status
     agent.last_seen = now
     agent.status = "online"
 
@@ -671,7 +668,6 @@ def get_uptime(agent_id: str, days: int = Query(7),
     # Construir línea de tiempo
     offline_secs = 0
     last_offline = None
-    current_online = agent.status == "online"
 
     for e in events:
         if e.type == "offline":

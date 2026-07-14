@@ -4,7 +4,7 @@ from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from core.db import get_db, get_current_user
+from core.db import get_db
 from core.permissions import require_permission
 from models.models import BlockSchedule, Agent, Sede
 

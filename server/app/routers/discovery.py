@@ -4,7 +4,7 @@ from sqlalchemy import desc
 from core.db import get_db
 from core.permissions import require_permission
 from models.models import Agent, Metric
-import subprocess, ipaddress, concurrent.futures, socket, time, fcntl
+import subprocess, ipaddress, concurrent.futures, socket, time
 
 router = APIRouter(prefix="/api/discovery", tags=["discovery"])
 
