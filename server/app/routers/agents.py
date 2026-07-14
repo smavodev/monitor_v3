@@ -519,6 +519,24 @@ def update_agent(agent_id: str, data: dict, user = Depends(require_permission("i
     db.commit()
     return {"ok": True}
 
+# ── Eliminar agente ─────────────────────────────────────────────────────────
+@router.delete("/{agent_id}")
+def delete_agent(agent_id: str, user = Depends(require_permission("inventory", "edit")), db: Session = Depends(get_db)):
+    """Borra el registro del equipo (y su historial: métricas, discos,
+    eventos, bloqueos/horarios propios, etc. — todo cae en cascada).
+    IMPORTANTE: esto NO desinstala el agente remoto. Si el proceso sigue
+    corriendo en esa máquina, al siguiente push de métricas el servidor
+    vuelve a crear el registro (se busca/crea por hostname). Pensado para
+    limpiar equipos ya dados de baja, duplicados o de prueba."""
+    a = db.query(Agent).filter(Agent.id == agent_id).first()
+    if not a:
+        raise HTTPException(404, "Agente no encontrado")
+    # AlertConfig no tiene ON DELETE CASCADE a nivel de base de datos.
+    db.query(AlertConfig).filter(AlertConfig.agent_id == agent_id).delete()
+    db.delete(a)
+    db.commit()
+    return {"ok": True}
+
 # ── Historial de cambios de inventario ─────────────────────────────────────
 @router.get("/{agent_id}/changes")
 def get_agent_changes(agent_id: str, user = Depends(require_permission("inventory", "view")), db: Session = Depends(get_db)):

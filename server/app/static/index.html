@@ -2072,6 +2072,13 @@ function filterAgents() {
   renderAgents(allAgents.filter(a => (a.display_name||a.hostname).toLowerCase().includes(q) || (a.sede||'').toLowerCase().includes(q)));
 }
 
+async function deleteAgent(id, nameEnc) {
+  const name = decodeURIComponent(nameEnc);
+  if (!confirm(`¿Eliminar "${name}" del listado? Esto borra su historial (métricas, eventos, asignaciones).\n\nOJO: si el agente sigue instalado y corriendo en ese equipo, volverá a aparecer solo con el próximo reporte — esto no lo desinstala remotamente.`)) return;
+  await api(`/api/agents/${id}`, {method:'DELETE'});
+  fetchAgents();
+}
+
 // ── Detail ─────────────────────────────────────────────────────────────────
 async function openDetail(agentId) {
   currentAgentId = agentId;
@@ -2372,6 +2379,7 @@ function renderInventory() {
     <td style="text-align:center" onclick="event.stopPropagation()">
       <button class="btn btn-ghost" title="Historial de cambios" style="padding:4px 6px;font-size:14px" onclick="toggleAgentDetail('${a.id}','changes')">🕑</button>
       <button class="btn btn-ghost" title="Asignaciones" style="padding:4px 6px;font-size:14px" onclick="toggleAgentDetail('${a.id}','assignment')">📋</button>
+      <button class="btn btn-ghost" title="Eliminar equipo" style="padding:4px 6px;font-size:14px" onclick="deleteAgent('${a.id}','${encodeURIComponent(a.display_name||a.hostname)}')">🗑️</button>
     </td>
     <td><strong>${a.display_name||a.hostname}</strong><br><span style="font-size:11px;color:var(--text-dim)">${a.hostname}</span></td>
     <td>${a.manufacturer||'--'}</td>
