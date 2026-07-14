@@ -15,8 +15,19 @@ from sqlalchemy.orm import Session
 app = FastAPI(title="SmartMonitor v3", docs_url=None, redoc_url=None)
 
 # ── Init DB ────────────────────────────────────────────────────────────────
+# SMARTMONITOR_ROLE=web-only: usado por el proceso uvicorn secundario (panel
+# admin por HTTPS en :8443 cuando hay certificado real, ver entrypoint.sh) —
+# ese proceso solo debe SERVIR la app; las migraciones, el seed de datos, el
+# resolver DNS (puertos 53/80/443) y el scheduler ya los corre el proceso
+# principal (:8000). Correrlos por duplicado chocaría bind de puertos y
+# podría duplicar inserts de seed en una condición de carrera.
+_WEB_ONLY = os.getenv("SMARTMONITOR_ROLE") == "web-only"
+
+
 @app.on_event("startup")
 def startup():
+    if _WEB_ONLY:
+        return
     Base.metadata.create_all(bind=engine)
     from sqlalchemy import text
     migrations = [

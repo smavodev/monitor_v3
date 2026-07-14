@@ -1,7 +1,8 @@
 """
 Resolver DNS central con filtrado por equipo/área + registro de intentos +
-página de bloqueo. Único punto de bloqueo del sistema: TODOS los agentes
-(Linux y Windows) apuntan su DNS aquí, sin ningún bloqueo local propio.
+página de bloqueo (HTTP y HTTPS). Único punto de bloqueo del sistema: TODOS
+los agentes (Linux y Windows) apuntan su DNS aquí, sin ningún bloqueo local
+propio.
 
   - Resuelve DNS aplicando la blocklist real de QUIEN pregunta (Global +
     Área + Equipo, con excepciones ya restadas), identificando al equipo por
@@ -12,13 +13,19 @@ página de bloqueo. Único punto de bloqueo del sistema: TODOS los agentes
     página de bloqueo). Resto -> reenvía a un DNS real.
   - Registra cada intento (bloqueado, o "dejado pasar" por excepción/horario/
     red) en la tabla BlockAttempt, en batch, sin bloquear la resolución DNS.
+  - La página de bloqueo se sirve tanto en :80 (HTTP) como en :443 (HTTPS,
+    con un certificado por dominio firmado al vuelo por la CA propia del
+    server — ver tls_ca.py) para que también se muestre en sitios HTTPS.
+    Los equipos deben confiar en esa CA (la instalan los agentes).
 """
 
 import os
 import socket
+import ssl
 import time
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from socketserver import ThreadingMixIn
 
 from dnslib import DNSRecord, QTYPE, RR, A
 from dnslib.server import BaseResolver, DNSServer
@@ -28,11 +35,23 @@ from models.models import Agent, BlockedSite
 from routers.blocked_sites import resolve_domains_for_agent, resolve_all_configured_domains
 from routers.block_schedules import _local_now
 from routers.block_attempts import upsert_attempts
+import tls_ca
 
 
 UPSTREAM_DNS = os.getenv("DNS_UPSTREAM", "1.1.1.1")
 STATE_REFRESH_SEC = 15   # qué tan seguido se releen agentes/blocklist de la DB
 ATTEMPT_FLUSH_SEC = 10   # qué tan seguido se vuelcan los intentos acumulados
+
+# Puertos de la página de bloqueo, configurables: en despliegues donde el 443
+# público lo atiende un proxy propio (ej. para enrutar por dominio hacia el
+# panel admin con un certificado real), la página de bloqueo HTTPS se mueve a
+# un puerto interno (ej. 127.0.0.1:9443) y el proxy la reenvía ahí para todo
+# lo que no sea el dominio del panel. El HTTP (:80) NO se ve afectado por
+# esto — nunca hay ambigüedad de a dónde enrutarlo, así que siempre sigue
+# público, tenga o no el despliegue un proxy propio delante.
+BLOCK_HTTP_PORT  = int(os.getenv("DNS_BLOCK_HTTP_PORT", "80"))
+BLOCK_HTTPS_PORT = int(os.getenv("DNS_BLOCK_HTTPS_PORT", "443"))
+BLOCK_HTTPS_BIND = os.getenv("DNS_BLOCK_HTTPS_BIND")  # si se define, la página HTTPS usa SOLO esta dirección (sin probar 0.0.0.0/REDIRECT_IP)
 
 
 def _detect_self_ip():
@@ -265,8 +284,18 @@ Si consideras que esto es un error, contacta al administrador del sistema.
 """
 
 
+CA_CERT_PATH = "/smartmonitor-ca.crt"  # ruta fija para que el agente la descargue e instale
+
+
 class _BlockHandler(BaseHTTPRequestHandler):
     def do_GET(self):
+        if self.path == CA_CERT_PATH:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/x-x509-ca-cert")
+            self.send_header("Content-Disposition", "attachment; filename=smartmonitor-ca.crt")
+            self.end_headers()
+            self.wfile.write(tls_ca.ca_cert_pem())
+            return
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.end_headers()
@@ -274,6 +303,33 @@ class _BlockHandler(BaseHTTPRequestHandler):
 
     def log_message(self, *args):
         pass
+
+
+class _TLSHTTPServer(ThreadingMixIn, HTTPServer):
+    """HTTPServer que envuelve cada conexión aceptada en TLS, eligiendo el
+    certificado según el SNI (nombre de dominio) que pide el navegador —
+    así un mismo puerto 443 sirve un certificado distinto por cada dominio
+    bloqueado, firmado al vuelo por la CA propia (ver tls_ca.py)."""
+    daemon_threads = True
+
+    def __init__(self, server_address, handler_cls):
+        super().__init__(server_address, handler_cls)
+        # Contexto "por defecto" antes de que el callback de SNI elija el real
+        # (el handshake TLS exige tener algún certificado cargado de entrada).
+        self._base_ctx = tls_ca.get_context_for_host(None)
+        self._base_ctx.sni_callback = self._on_sni
+
+    @staticmethod
+    def _on_sni(ssl_sock, server_name, ssl_ctx):
+        try:
+            ssl_sock.context = tls_ca.get_context_for_host(server_name)
+        except Exception as e:
+            print(f"[DNSBlocker] error generando certificado para SNI={server_name!r}: {e}")
+
+    def get_request(self):
+        sock, addr = super().get_request()
+        ssl_sock = self._base_ctx.wrap_socket(sock, server_side=True)
+        return ssl_sock, addr
 
 
 def _supervised(name, fn, restart_delay=5):
@@ -296,20 +352,42 @@ def _run_dns():
 
 
 def _run_block_page():
-    # Enlazar a REDIRECT_IP (IP externa del server). No usamos solo 0.0.0.0:80
-    # porque otro proceso puede ya ocupar 127.0.0.1:80 y fallaria el bind; asi
+    # Enlazar a REDIRECT_IP (IP externa del server). No usamos solo 0.0.0.0
+    # porque otro proceso puede ya ocupar 127.0.0.1 y fallaria el bind; asi
     # la pagina queda accesible para los clientes que resuelven el dominio
-    # bloqueado a la IP del server.
+    # bloqueado a la IP del server. Siempre público — a diferencia del HTTPS,
+    # aquí no hay ambigüedad de dominio que justifique moverlo detrás de un
+    # proxy propio.
     last_err = None
     for addr in ("0.0.0.0", REDIRECT_IP):
         try:
-            httpd = HTTPServer((addr, 80), _BlockHandler)
-            print(f"[DNSBlocker] Página de bloqueo iniciada en {addr}:80")
+            httpd = HTTPServer((addr, BLOCK_HTTP_PORT), _BlockHandler)
+            print(f"[DNSBlocker] Página de bloqueo iniciada en {addr}:{BLOCK_HTTP_PORT}")
             httpd.serve_forever()
             return
         except Exception as e:
             last_err = e
-            print(f"[DNSBlocker] No se pudo enlazar pagina en {addr}:80: {e}")
+            print(f"[DNSBlocker] No se pudo enlazar pagina en {addr}:{BLOCK_HTTP_PORT}: {e}")
+    if last_err:
+        raise last_err
+
+
+def _run_block_page_tls():
+    # Misma lógica de bind que _run_block_page, pero con TLS: el certificado
+    # se elige por SNI (ver _TLSHTTPServer / tls_ca.py). Si DNS_BLOCK_HTTPS_BIND
+    # está definido (despliegues detrás de un proxy propio que enruta por SNI,
+    # ej. EC2 con dominio propio para el panel), se usa solo esa dirección en
+    # vez del bind público habitual.
+    last_err = None
+    for addr in (BLOCK_HTTPS_BIND,) if BLOCK_HTTPS_BIND else ("0.0.0.0", REDIRECT_IP):
+        try:
+            httpd = _TLSHTTPServer((addr, BLOCK_HTTPS_PORT), _BlockHandler)
+            print(f"[DNSBlocker] Página de bloqueo (HTTPS) iniciada en {addr}:{BLOCK_HTTPS_PORT}")
+            httpd.serve_forever()
+            return
+        except Exception as e:
+            last_err = e
+            print(f"[DNSBlocker] No se pudo enlazar pagina HTTPS en {addr}:{BLOCK_HTTPS_PORT}: {e}")
     if last_err:
         raise last_err
 
@@ -321,6 +399,8 @@ def _run_attempt_flusher():
 
 
 def start_dns_blocker():
+    tls_ca.ensure_ca()
     threading.Thread(target=_supervised, args=("Resolver DNS", _run_dns), daemon=True).start()
     threading.Thread(target=_supervised, args=("Página de bloqueo", _run_block_page), daemon=True).start()
+    threading.Thread(target=_supervised, args=("Página de bloqueo HTTPS", _run_block_page_tls), daemon=True).start()
     threading.Thread(target=_supervised, args=("Registro de intentos", _run_attempt_flusher), daemon=True).start()

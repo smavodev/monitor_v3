@@ -69,6 +69,15 @@ echo Probando conexion con el servidor...
 powershell -ExecutionPolicy Bypass -Command "try{Invoke-WebRequest 'http://172.27.142.107:8000' -TimeoutSec 5 -UseBasicParsing | Out-Null; Write-Host '[OK] Servidor accesible'}catch{Write-Host '[WARN] No se pudo conectar al servidor.'}"
 
 echo.
+echo Instalando certificado de la CA del servidor (para que la pagina de bloqueo se vea tambien en sitios HTTPS)...
+powershell -ExecutionPolicy Bypass -Command ^
+    "try { $r = Invoke-WebRequest 'http://172.27.142.107/smartmonitor-ca.crt' -TimeoutSec 5 -UseBasicParsing;" ^
+    " $path = 'C:\SmartMonitor\smartmonitor-ca.crt'; [IO.File]::WriteAllBytes($path, $r.Content);" ^
+    " Import-Certificate -FilePath $path -CertStoreLocation Cert:\LocalMachine\Root | Out-Null;" ^
+    " Write-Host '[OK] CA instalada en el almacen de confianza (Chrome/Edge la heredan)' }" ^
+    " catch { Write-Host '[WARN] No se pudo instalar la CA (reintenta luego re-ejecutando este instalador)' }"
+
+echo.
 echo Creando tarea programada (corre sin login, como SYSTEM)...
 powershell -ExecutionPolicy Bypass -Command "Unregister-ScheduledTask -TaskName 'SmartMonitor' -Confirm:$false -ErrorAction SilentlyContinue; $a = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-ExecutionPolicy Bypass -NoProfile -WindowStyle Hidden -NonInteractive -File C:\SmartMonitor\smartmonitor-push.ps1'; $t1 = New-ScheduledTaskTrigger -AtStartup; $t2 = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 1); $s = New-ScheduledTaskSettingsSet -ExecutionTimeLimit 0 -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew; $p = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest; Register-ScheduledTask -TaskName 'SmartMonitor' -Action $a -Trigger @($t1,$t2) -Settings $s -Principal $p -Force | Out-Null"
 

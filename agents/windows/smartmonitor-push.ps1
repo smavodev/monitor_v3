@@ -223,7 +223,11 @@ function Disable-BrowserDoH {
         if (Test-Path $ff) {
             $pol = Join-Path $ff "distribution\policies.json"
             New-Item -Path (Split-Path $pol) -Force | Out-Null
-            Set-Content -Path $pol -Value '{"policies":{"DNSOverHTTPS":{"Enabled":false,"Locked":true}}}' -Force
+            # ImportEnterpriseRoots: Firefox usa su propio almacen de certificados
+            # (NSS) y por defecto ignora el de Windows. Sin esto, aunque la CA de
+            # SmartMonitor este instalada en Cert:\LocalMachine\Root, Firefox
+            # seguiria mostrando advertencia de certificado en la pagina de bloqueo.
+            Set-Content -Path $pol -Value '{"policies":{"DNSOverHTTPS":{"Enabled":false,"Locked":true},"ImportEnterpriseRoots":true}}' -Force
         }
     } catch { Write-Log "WARN: no se pudo desactivar DoH del navegador: $_" }
 }
