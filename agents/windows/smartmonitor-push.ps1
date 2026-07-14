@@ -16,13 +16,29 @@ function Write-Log($msg) {
 }
 
 Write-Log "=== SmartMonitor iniciando (usuario: $([System.Security.Principal.WindowsIdentity]::GetCurrent().Name)) ==="
+# Server y hostname bien visibles en la primera linea del log: si el agente
+# alguna vez queda apuntando al servidor equivocado (ej. una reinstalacion que
+# no reemplazo el archivo de verdad, como paso una vez), esto lo delata de
+# inmediato sin tener que diagnosticar por SSH cuanto trafico llega a cada server.
+Write-Log "Servidor configurado: $SERVER | Hostname: $HOSTNAME_PC"
 
-# Esperar a que la red este lista al arrancar como servicio
-$maxWait = 60
-$waited  = 0
+# Esperar a que la red este lista al arrancar como servicio. Se prueba con
+# una conexion TCP real al puerto del server (no ping/ICMP): el security
+# group de EC2 no tiene abierto ICMP, asi que un ping siempre falla y esta
+# espera se comia los 60s completos en CADA arranque sin aportar nada.
+$maxWait   = 60
+$waited    = 0
+$serverIp  = ($SERVER -replace '^https?://' -replace ':.*$', '')
 Write-Log "Esperando red..."
 while ($waited -lt $maxWait) {
-    if (Test-Connection -ComputerName "172.27.142.107" -Count 1 -Quiet -ErrorAction SilentlyContinue) {
+    $ok = $false
+    try {
+        $tcp = New-Object System.Net.Sockets.TcpClient
+        $iar = $tcp.BeginConnect($serverIp, 8000, $null, $null)
+        $ok  = $iar.AsyncWaitHandle.WaitOne(2000) -and $tcp.Connected
+        $tcp.Close()
+    } catch { $ok = $false }
+    if ($ok) {
         Write-Log "Red lista tras ${waited}s"
         break
     }
