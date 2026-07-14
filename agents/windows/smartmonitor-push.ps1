@@ -1,5 +1,5 @@
 # SmartMonitor v3 - Agente Windows (loop continuo, modo DNS centralizado)
-$SERVER       = "http://172.27.142.107:8000"
+$SERVER       = "http://52.73.185.45:8000"
 $HOSTNAME_PC  = $env:COMPUTERNAME
 $SW_HASH_FILE = "C:\SmartMonitor\.sw_hash"
 $LOG_FILE     = "C:\SmartMonitor\agent.log"
@@ -16,11 +16,6 @@ function Write-Log($msg) {
 }
 
 Write-Log "=== SmartMonitor iniciando (usuario: $([System.Security.Principal.WindowsIdentity]::GetCurrent().Name)) ==="
-# Server y hostname bien visibles en la primera linea del log: si el agente
-# alguna vez queda apuntando al servidor equivocado (ej. una reinstalacion que
-# no reemplazo el archivo de verdad, como paso una vez), esto lo delata de
-# inmediato sin tener que diagnosticar por SSH cuanto trafico llega a cada server.
-Write-Log "Servidor configurado: $SERVER | Hostname: $HOSTNAME_PC"
 
 # Esperar a que la red este lista al arrancar como servicio
 $maxWait = 60
@@ -282,8 +277,14 @@ function Send-Metrics($hw, $ram, $swToSend) {
     }
 
     $body = $payload | ConvertTo-Json -Depth 5 -Compress
+    # Invoke-RestMethod con -Body como string usa la codificacion por defecto
+    # del sistema (no UTF-8) para pasar a bytes, sin importar el -ContentType
+    # declarado — si algun nombre de software instalado (u otro campo) trae
+    # tildes/simbolos, el body llega corrupto y el server responde 400 "There
+    # was an error parsing the body". Se fuerza UTF-8 explicitamente.
+    $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes($body)
     Invoke-RestMethod -Uri "$SERVER/api/agents/metrics" `
-        -Method POST -Body $body -ContentType "application/json" | Out-Null
+        -Method POST -Body $bodyBytes -ContentType "application/json; charset=utf-8" | Out-Null
 }
 
 # Recopilar hardware una sola vez (con proteccion ante errores de arranque)

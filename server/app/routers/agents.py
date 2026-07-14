@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime, timedelta
 import asyncio, json, urllib.request, urllib.parse
-from core.db import get_db, get_user_from_token_param
+from core.db import get_db, get_user_from_token_param, Session as DBSession
 from core.permissions import require_permission
 from core.notify import send_email_silent
 from models.models import Agent, Metric, Disk, Event, AlertConfig, BlockedSite, AgentChangeLog, AssignmentLog, User
@@ -320,63 +320,87 @@ def list_agents(user = Depends(require_permission("dashboard", "view")), db: Ses
 async def stream_agents(
     interval: int = 3,
     user = Depends(get_user_from_token_param),
-    db: Session = Depends(get_db)
 ):
     interval = max(1, min(interval, 60))
 
+    # OJO: esta conexión SSE vive mientras el navegador tenga el dashboard
+    # abierto (horas). Antes se usaba un único `db` de Depends(get_db) para
+    # todo ese tiempo — cada pestaña/reconexión dejaba una conexión del pool
+    # ocupada indefinidamente, y tras suficientes horas de uso normal el pool
+    # (tamaño 5 + 10 de overflow) se agotaba con un TimeoutError, tumbando
+    # el resto de la API con 500. Cada snapshot abre y cierra su propia
+    # sesión, así solo ocupa una conexión el instante que tarda en construirse.
     def build_snapshot():
-        check_offline(db)
-        db.expire_all()
-        agents = db.query(Agent).all()
-        result = []
-        for a in agents:
-            last = db.query(Metric).filter(Metric.agent_id == a.id).order_by(desc(Metric.timestamp)).first()
-            ago  = int((datetime.utcnow() - a.last_seen).total_seconds()) if a.last_seen else 9999
-            result.append({
-                "id": a.id, "hostname": a.hostname,
-                "display_name": a.display_name or a.hostname,
-                "status": a.status, "last_seen_ago": ago,
-                "os": a.os, "os_version": a.os_version,
-                "manufacturer": a.manufacturer, "model": a.model,
-                "serial_number": a.serial_number,
-                "cpu_model": a.cpu_model, "cpu_cores": a.cpu_cores,
-                "ram_total_gb":   a.ram_total_gb,
-                "ram_slots_total": a.ram_slots_total,
-                "ram_slots_used":  a.ram_slots_used,
-                "cpu_percent":  last.cpu_percent  if last else 0,
-                "ram_percent":  last.ram_percent  if last else 0,
-                "ram_used_gb":  last.ram_used_gb  if last else 0,
-                "disk_percent": last.disk_percent if last else 0,
-                "net_rx_mb":    last.net_rx_mb    if last else 0,
-                "net_tx_mb":    last.net_tx_mb    if last else 0,
-                "cpu_temp":     last.cpu_temp     if last else None,
-                "latency_ms":   last.latency_ms   if last else None,
-                "top_processes":last.top_processes if last else [],
-                "sede": a.sede.name if a.sede else None,
-                "sede_id": a.sede_id,
+        db = DBSession()
+        try:
+            check_offline(db)
+            agents = db.query(Agent).all()
+            result = []
+            for a in agents:
+                last = db.query(Metric).filter(Metric.agent_id == a.id).order_by(desc(Metric.timestamp)).first()
+                ago  = int((datetime.utcnow() - a.last_seen).total_seconds()) if a.last_seen else 9999
+                result.append({
+                    "id": a.id, "hostname": a.hostname,
+                    "display_name": a.display_name or a.hostname,
+                    "status": a.status, "last_seen_ago": ago,
+                    "os": a.os, "os_version": a.os_version,
+                    "manufacturer": a.manufacturer, "model": a.model,
+                    "serial_number": a.serial_number,
+                    "cpu_model": a.cpu_model, "cpu_cores": a.cpu_cores,
+                    "ram_total_gb":   a.ram_total_gb,
+                    "ram_slots_total": a.ram_slots_total,
+                    "ram_slots_used":  a.ram_slots_used,
+                    "cpu_percent":  last.cpu_percent  if last else 0,
+                    "ram_percent":  last.ram_percent  if last else 0,
+                    "ram_used_gb":  last.ram_used_gb  if last else 0,
+                    "disk_percent": last.disk_percent if last else 0,
+                    "net_rx_mb":    last.net_rx_mb    if last else 0,
+                    "net_tx_mb":    last.net_tx_mb    if last else 0,
+                    "cpu_temp":     last.cpu_temp     if last else None,
+                    "latency_ms":   last.latency_ms   if last else None,
+                    "top_processes":last.top_processes if last else [],
+                    "sede": a.sede.name if a.sede else None,
+                    "sede_id": a.sede_id,
+                    # Estos campos también los usa la vista de Inventario (edición,
+                    # tipo de dispositivo, asignaciones): si faltan aquí, cada
+                    # refresco del stream (cada pocos segundos) los borra de
+                    # allAgents en el frontend aunque sigan bien guardados en la
+                    # base de datos — parecía que "no guardaba" el tipo de equipo.
+                    "notes": a.notes,
+                    "device_type": a.device_type,
+                    "device_type_manual": bool(a.device_type_manual),
+                    "assigned_user": a.assigned_user,
+                    "assigned_user_name": (db.query(User).filter(User.id == a.assigned_user).first().name
+                                            if a.assigned_user else None),
+                    "assigned_at": a.assigned_at.isoformat() if a.assigned_at else None,
+                    "returned_at": a.returned_at.isoformat() if a.returned_at else None,
+                    "assignment_notes": a.assignment_notes,
+                    "return_notes": a.return_notes,
+                })
+            result.sort(key=lambda x: (x["status"] != "online", -(x["cpu_percent"] or 0)))
+
+            alerts = db.query(Event).filter(
+                Event.resolved == False,
+                Event.type.in_(["offline","cpu_high","ram_high","disk_high","temp_high"])
+            ).order_by(desc(Event.timestamp)).limit(20).all()
+
+            agents_map = {a.id: a for a in db.query(Agent).all()}
+            alert_list = [{"id": e.agent_id,
+                           "hostname": agents_map[e.agent_id].hostname if e.agent_id in agents_map else "?",
+                           "type": e.type, "detail": e.detail} for e in alerts]
+
+            return json.dumps({
+                "agents": result,
+                "summary": {
+                    "total":   len(result),
+                    "online":  sum(1 for a in result if a["status"] == "online"),
+                    "offline": sum(1 for a in result if a["status"] == "offline"),
+                    "alerts":  alert_list,
+                },
+                "ts": datetime.utcnow().isoformat()
             })
-        result.sort(key=lambda x: (x["status"] != "online", -(x["cpu_percent"] or 0)))
-
-        alerts = db.query(Event).filter(
-            Event.resolved == False,
-            Event.type.in_(["offline","cpu_high","ram_high","disk_high","temp_high"])
-        ).order_by(desc(Event.timestamp)).limit(20).all()
-
-        agents_map = {a.id: a for a in db.query(Agent).all()}
-        alert_list = [{"id": e.agent_id,
-                       "hostname": agents_map[e.agent_id].hostname if e.agent_id in agents_map else "?",
-                       "type": e.type, "detail": e.detail} for e in alerts]
-
-        return json.dumps({
-            "agents": result,
-            "summary": {
-                "total":   len(result),
-                "online":  sum(1 for a in result if a["status"] == "online"),
-                "offline": sum(1 for a in result if a["status"] == "offline"),
-                "alerts":  alert_list,
-            },
-            "ts": datetime.utcnow().isoformat()
-        })
+        finally:
+            db.close()
 
     async def generator():
         yield f"data: {build_snapshot()}\n\n"

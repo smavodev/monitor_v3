@@ -17,7 +17,7 @@ set "PS_DEST=%INSTALL_DIR%\smartmonitor-push.ps1"
 REM IP o dominio del servidor SmartMonitor: uso "install-agent-windows.bat <IP_SERVIDOR>"
 REM Si no se pasa nada, usa la IP anterior por compatibilidad con instalaciones existentes.
 set "SERVER_IP=%~1"
-if "%SERVER_IP%"=="" set "SERVER_IP=172.27.142.107"
+if "%SERVER_IP%"=="" set "SERVER_IP=52.73.185.45"
 
 if not exist "%PS_SRC%" (
     echo [ERROR] No se encuentra smartmonitor-push.ps1 en la misma carpeta.
@@ -38,18 +38,9 @@ REM 2) Quitar autoinicio en el registro
 powershell -ExecutionPolicy Bypass -Command "Remove-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run' -Name 'SmartMonitor' -ErrorAction SilentlyContinue" >nul 2>&1
 echo [OK] Clave de autoinicio eliminada
 
-REM 3) Matar cualquier proceso del agente que quede vivo (libera el .ps1).
-REM Se reintenta y se verifica: una vez pasó que el proceso viejo seguia vivo
-REM con la config anterior cargada en memoria mientras la tarea programada ya
-REM apuntaba a la nueva, y el log mezclaba ambos sin ningun error visible.
-powershell -ExecutionPolicy Bypass -Command ^
-    "for ($i = 0; $i -lt 3; $i++) {" ^
-    " $procs = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*smartmonitor-push.ps1*' };" ^
-    " if (-not $procs) { break };" ^
-    " $procs | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue };" ^
-    " Start-Sleep -Milliseconds 500 }" ^
-    " $left = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*smartmonitor-push.ps1*' };" ^
-    " if ($left) { Write-Host '[WARN] Sigue vivo un proceso del agente anterior (PID' $left.ProcessId ') - revisa manualmente' } else { Write-Host '[OK] Procesos previos detenidos' }"
+REM 3) Matar cualquier proceso del agente que quede vivo (libera el .ps1)
+powershell -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*smartmonitor-push.ps1*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }" >nul 2>&1
+echo [OK] Procesos previos detenidos
 
 REM 4) Restaurar el DNS del sistema si el agente lo habia tomado (127.0.0.1)
 powershell -ExecutionPolicy Bypass -Command "$adapters = Get-DnsClientServerAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.ServerAddresses -contains '127.0.0.1' }; foreach ($a in $adapters) { try { Set-DnsClientServerAddress -InterfaceIndex $a.InterfaceIndex -ResetServerAddresses } catch {} }" >nul 2>&1
@@ -100,7 +91,7 @@ powershell -ExecutionPolicy Bypass -Command ^
 
 echo.
 echo Creando tarea programada (corre sin login, como SYSTEM)...
-powershell -ExecutionPolicy Bypass -Command "Unregister-ScheduledTask -TaskName 'SmartMonitor' -Confirm:$false -ErrorAction SilentlyContinue; $a = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-ExecutionPolicy Bypass -NoProfile -WindowStyle Hidden -NonInteractive -File C:\SmartMonitor\smartmonitor-push.ps1'; $t1 = New-ScheduledTaskTrigger -AtStartup; $t2 = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 1); $s = New-ScheduledTaskSettingsSet -ExecutionTimeLimit 0 -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew; $p = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest; Register-ScheduledTask -TaskName 'SmartMonitor' -Action $a -Trigger @($t1,$t2) -Settings $s -Principal $p -Force | Out-Null"
+powershell -ExecutionPolicy Bypass -Command "Unregister-ScheduledTask -TaskName 'SmartMonitor' -Confirm:$false -ErrorAction SilentlyContinue; $a = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-ExecutionPolicy Bypass -NoProfile -WindowStyle Hidden -NonInteractive -File C:\SmartMonitor\smartmonitor-push.ps1'; $t1 = New-ScheduledTaskTrigger -AtStartup; $t2 = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 1); $s = New-ScheduledTaskSettingsSet -ExecutionTimeLimit 0 -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries; $p = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest; Register-ScheduledTask -TaskName 'SmartMonitor' -Action $a -Trigger @($t1,$t2) -Settings $s -Principal $p -Force | Out-Null"
 
 if %errorlevel% equ 0 (
     echo [OK] Tarea creada (SYSTEM) - corre sin login, reinicia cada minuto si falla
@@ -112,17 +103,6 @@ if %errorlevel% equ 0 (
 
 schtasks /run /tn "SmartMonitor" >nul 2>&1
 echo [OK] Agente iniciado
-
-REM Verificacion final: mostrar el SERVER que de verdad quedo en el archivo
-REM instalado (no el que se pidio) - un reemplazo silenciosamente fallido
-REM (o una copia vieja de este instalador) se nota en el momento y no hay
-REM que diagnosticarlo despues por SSH viendo a que servidor llega el trafico.
-echo.
-echo Verificando configuracion final...
-powershell -ExecutionPolicy Bypass -Command ^
-    "$line = (Get-Content 'C:\SmartMonitor\smartmonitor-push.ps1' | Select-String '^\$SERVER').ToString();" ^
-    " Write-Host ('  Servidor configurado (verificado en el archivo instalado): ' + $line);" ^
-    " if ($line -notmatch [regex]::Escape('%SERVER_IP%')) { Write-Host '  [ADVERTENCIA] No coincide con la IP pedida (%SERVER_IP%). Revisa el archivo manualmente.' }"
 
 echo.
 echo  Instalacion completada.
