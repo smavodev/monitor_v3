@@ -1,0 +1,384 @@
+# SmartMonitor v3 - Agente Windows (loop continuo, modo DNS centralizado)
+$SERVER       = "http://172.27.142.107:8000"
+$HOSTNAME_PC  = $env:COMPUTERNAME
+$SW_HASH_FILE = "C:\SmartMonitor\.sw_hash"
+$LOG_FILE     = "C:\SmartMonitor\agent.log"
+$INTERVAL     = 60
+
+function Write-Log($msg) {
+    $line = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $msg"
+    Write-Host $line
+    try {
+        $dir = Split-Path $LOG_FILE -Parent
+        if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+        Add-Content -Path $LOG_FILE -Value $line -Encoding UTF8 -Force
+    } catch {}
+}
+
+Write-Log "=== SmartMonitor iniciando (usuario: $([System.Security.Principal.WindowsIdentity]::GetCurrent().Name)) ==="
+
+# Esperar a que la red este lista al arrancar como servicio
+$maxWait = 60
+$waited  = 0
+Write-Log "Esperando red..."
+while ($waited -lt $maxWait) {
+    if (Test-Connection -ComputerName "172.27.142.107" -Count 1 -Quiet -ErrorAction SilentlyContinue) {
+        Write-Log "Red lista tras ${waited}s"
+        break
+    }
+    Start-Sleep -Seconds 5
+    $waited += 5
+}
+if ($waited -ge $maxWait) { Write-Log "WARN: Red no disponible tras ${maxWait}s - continuando" }
+
+function Get-CpuPercent {
+    try {
+        $load = (Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average
+        return [math]::Round($load, 1)
+    } catch { return 0.0 }
+}
+
+function Get-MemInfo {
+    $os      = Get-CimInstance Win32_OperatingSystem
+    $totalMB = [math]::Round($os.TotalVisibleMemorySize / 1024, 0)
+    $freeMB  = [math]::Round($os.FreePhysicalMemory / 1024, 0)
+    $usedMB  = $totalMB - $freeMB
+    return @{
+        percent  = [math]::Round($usedMB / $totalMB * 100, 1)
+        total_gb = [math]::Round($totalMB / 1024, 1)
+        used_gb  = [math]::Round($usedMB / 1024, 2)
+    }
+}
+
+function Get-DiskInfo {
+    $disks = @()
+    Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Used -ne $null } | ForEach-Object {
+        $total = [math]::Round(($_.Used + $_.Free) / 1GB, 1)
+        $used  = [math]::Round($_.Used / 1GB, 1)
+        $pct   = if ($total -gt 0) { [math]::Round($used / $total * 100, 1) } else { 0 }
+        if ($total -gt 0.1) {
+            $disks += @{ device=$_.Name; mountpoint=$_.Root; total_gb=$total; used_gb=$used; percent=$pct }
+        }
+    }
+    return $disks
+}
+
+function Get-TopProcesses($totalRamGB) {
+    return @(Get-Process |
+        Where-Object { $_.CPU -ne $null } |
+        Group-Object Name |
+        ForEach-Object {
+            $cpu = [math]::Round(($_.Group | Measure-Object CPU -Sum).Sum, 1)
+            $mem = [math]::Round(($_.Group | Measure-Object WorkingSet64 -Sum).Sum / 1MB, 0)
+            $memPct = if ($totalRamGB -gt 0) { [math]::Round($mem / ($totalRamGB * 1024) * 100, 1) } else { 0 }
+            @{ name=$_.Name; cpu=$cpu; mem=$memPct }
+        } |
+        Sort-Object { -$_.cpu } |
+        Select-Object -First 100)
+}
+
+function Get-InstalledSoftware {
+    $paths = @(
+        'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
+        'HKLM:\Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
+    )
+    $seen = @{}; $sw = @()
+    foreach ($path in $paths) {
+        if (Test-Path $path) {
+            Get-ItemProperty $path -ErrorAction SilentlyContinue |
+                Where-Object { $_.DisplayName -and $_.DisplayName -notmatch '^\s*$' } |
+                ForEach-Object {
+                    $key = $_.DisplayName.Trim()
+                    if (-not $seen[$key]) {
+                        $seen[$key] = $true
+                        $sw += @{ name=$key; version=($_.DisplayVersion -replace '^\s+|\s+$','') }
+                    }
+                }
+        }
+    }
+    return $sw | Sort-Object { $_.name.ToLower() }
+}
+
+# ── Bloqueo centralizado (Fase 1 + 2) ────────────────────────────────────────
+# El agente NO hace sinkhole/hosts local: apunta el DNS de TODAS las interfaces
+# activas al server, que aplica la blocklist centralmente (dns_blocker.py) y
+# redirige los dominios bloqueados a la pagina de bloqueo. Para vencer DoH se
+# desactiva el "Secure DNS" del navegador y se bloquean los endpoints DoH.
+
+function Get-WifiSSID {
+    # Importante: Windows suele nombrar el perfil de conexion con un sufijo
+    # " 2"/" 3" cuando hay perfiles duplicados, asi que el campo 'Profile' NO es
+    # el SSID real (este equipo lo reportaba como "Nuzzle 2" siendo "Nuzzle").
+    # Por eso priorizamos el SSID real y solo usamos el nombre de perfil como
+    # ultimo recurso, quitandole el sufijo numerico.
+    # 1) netsh: campo 'SSID' (SSID real; puede venir vacio en W11 sin ubicacion)
+    try {
+        $out = netsh wlan show interfaces 2>$null
+        foreach ($line in $out) {
+            if ($line -match '^\s*SSID\s*:\s*(.+)$' -and $line -notmatch 'BSSID') {
+                $v = $matches[1].Trim()
+                if ($v) { return $v }
+            }
+        }
+    } catch {}
+    # 2) WMI NDIS: SSID real leido directamente del driver (sin ubicacion)
+    try {
+        $wmi = Get-CimInstance -Namespace 'root/wmi' -ClassName 'MSNdis_80211_ServiceSetIdentifier' -ErrorAction SilentlyContinue
+        foreach ($w in $wmi) {
+            $bytes = $w.Ndis80211SsId
+            if ($bytes -and $bytes.Count -gt 0) {
+                $s = -join ($bytes | ForEach-Object { if ($_ -ge 32 -and $_ -le 126) { [char]$_ } })
+                if ($s.Trim()) { return $s.Trim() }
+            }
+        }
+    } catch {}
+    # 3) netsh: campo 'Profile' (nombre del perfil; quitar sufijo " 2"/" 3")
+    try {
+        $out = netsh wlan show interfaces 2>$null
+        foreach ($line in $out) {
+            if ($line -match '^\s*Profile\s*:\s*(.+)$') {
+                $v = $matches[1].Trim() -replace '\s+\d+$', ''
+                if ($v) { return $v }
+            }
+        }
+    } catch {}
+    # 4) Perfil de conexion (ultimo recurso; tambien quitar sufijo)
+    try {
+        $cp = Get-NetConnectionProfile -ErrorAction SilentlyContinue
+        $wifi = @($cp | Where-Object { $_.InterfaceAlias -match 'wi' })
+        foreach ($p in @($wifi + $cp)) {
+            if ($p.Name -and $p.Name.Trim()) { return $p.Name.Trim() -replace '\s+\d+$', '' }
+        }
+    } catch {}
+    return $null
+}
+
+function Get-BlockList {
+    try {
+        $ssid = Get-WifiSSID
+        $ssidParam = if ($ssid) { [uri]::EscapeDataString($ssid) } else { "" }
+        Write-Log "BLOCKLIST consultando (hostname=$HOSTNAME_PC ssid='$ssid')"
+        $r = Invoke-RestMethod -Uri "$SERVER/api/agents/blocklist?hostname=$HOSTNAME_PC&ssid=$ssidParam" -Method GET -TimeoutSec 5
+        $allDomains = @($r.all_domains)
+        $shouldBlock = [bool]($r.should_block -ne $false)
+        return @{ AllDomains = $allDomains; ShouldBlock = $shouldBlock }
+    } catch { Write-Log "BLOCKLIST ERROR consultando: $_"; return $null }
+}
+
+function Get-ServerDnsIp {
+    try {
+        return ($SERVER -replace '^https?://' -replace ':.*$', '')
+    } catch { return $SERVER }
+}
+
+function Set-CentralDns {
+    try {
+        $ip = Get-ServerDnsIp
+        # Aplicar el DNS del server a TODAS las interfaces activas, igual que
+        # 'resolvectl dns *' en Linux. Si solo lo ponemos en la interfaz de la
+        # ruta por defecto, Windows (resolucion multi-homed) manda consultas por
+        # otra interfaz con su DNS de DHCP y esquiva el filtro -> no bloquea.
+        $adapters = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' })
+        if ($adapters.Count -eq 0) {
+            # Fallback a la ruta por defecto si no hay ninguna 'Up' detectable
+            $idx = (Get-NetRoute -DestinationPrefix "0.0.0.0/0" -ErrorAction Stop |
+                     Sort-Object RouteMetric | Select-Object -First 1).InterfaceIndex
+            if ($idx) { Set-DnsClientServerAddress -InterfaceIndex $idx -ServerAddresses $ip }
+        } else {
+            foreach ($a in $adapters) {
+                try { Set-DnsClientServerAddress -InterfaceIndex $a.InterfaceIndex -ServerAddresses $ip -ErrorAction SilentlyContinue } catch {}
+            }
+        }
+        & ipconfig /flushdns | Out-Null
+    } catch { Write-Log "WARN: no se pudo apuntar el DNS al server: $_" }
+}
+
+function Restore-Dns {
+    try {
+        $adapters = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' })
+        if ($adapters.Count -eq 0) {
+            $idx = (Get-NetRoute -DestinationPrefix "0.0.0.0/0" -ErrorAction Stop |
+                     Sort-Object RouteMetric | Select-Object -First 1).InterfaceIndex
+            if ($idx) { Set-DnsClientServerAddress -InterfaceIndex $idx -ResetServerAddresses }
+        } else {
+            foreach ($a in $adapters) {
+                try { Set-DnsClientServerAddress -InterfaceIndex $a.InterfaceIndex -ResetServerAddresses -ErrorAction SilentlyContinue } catch {}
+            }
+        }
+        & ipconfig /flushdns | Out-Null
+    } catch {}
+}
+
+# Fase 2: cerrar la via de DoH para que el DNS central sea efectivo
+$DoHEndpoints = @("1.1.1.1","1.0.0.1","8.8.8.8","8.8.4.4","9.9.9.9","149.112.112.112")
+
+function Disable-BrowserDoH {
+    try {
+        foreach ($p in @("Google\Chrome","Microsoft\Edge","BraveSoftware\Brave")) {
+            $k = "HKLM:\Software\Policies\$p"
+            if (-not (Test-Path $k)) { New-Item -Path $k -Force | Out-Null }
+            Set-ItemProperty -Path $k -Name "DnsOverHttpsMode" -Value "off" -Type String -Force
+        }
+        $ff = Join-Path ${env:ProgramFiles} "Mozilla Firefox"
+        if (Test-Path $ff) {
+            $pol = Join-Path $ff "distribution\policies.json"
+            New-Item -Path (Split-Path $pol) -Force | Out-Null
+            Set-Content -Path $pol -Value '{"policies":{"DNSOverHTTPS":{"Enabled":false,"Locked":true}}}' -Force
+        }
+    } catch { Write-Log "WARN: no se pudo desactivar DoH del navegador: $_" }
+}
+
+function Block-DoHEndpoints {
+    try {
+        foreach ($ep in $DoHEndpoints) {
+            $name = "SM_BlockDoH_$ep"
+            netsh advfirewall firewall delete rule name="$name" | Out-Null
+            netsh advfirewall firewall add rule name="$name" dir=out action=block remoteip="$ep" | Out-Null
+        }
+    } catch { Write-Log "WARN: no se pudo bloquear endpoints DoH: $_" }
+}
+
+function Send-Metrics($hw, $ram, $swToSend) {
+    $mem      = Get-MemInfo
+    $cpu      = Get-CpuPercent
+    $disks    = Get-DiskInfo
+    $procs    = Get-TopProcesses $mem.total_gb
+    $mainDisk = $disks | Sort-Object { -$_.total_gb } | Select-Object -First 1
+    $diskPct  = if ($mainDisk) { $mainDisk.percent } else { 0 }
+
+    $payload = [ordered]@{
+        hostname           = $HOSTNAME_PC
+        os                 = "windows"
+        os_version         = $hw.os_version
+        manufacturer       = $hw.manufacturer
+        model              = $hw.model
+        serial_number      = $hw.serial_number
+        cpu_model          = $hw.cpu_model
+        cpu_cores          = $hw.cpu_cores
+        ram_slots_total    = $ram.total
+        ram_slots_used     = $ram.used
+        ram_total_gb       = $mem.total_gb
+        cpu_percent        = $cpu
+        ram_percent        = $mem.percent
+        ram_used_gb        = $mem.used_gb
+        disk_percent       = $diskPct
+        net_rx_mb          = 0
+        net_tx_mb          = 0
+        cpu_temp           = $null
+        latency_ms         = $null
+        disks              = @($disks)
+        top_processes      = @($procs)
+        ram_slots_detail   = @($ram.detail)
+        installed_software = @($swToSend)
+    }
+
+    $body = $payload | ConvertTo-Json -Depth 5 -Compress
+    Invoke-RestMethod -Uri "$SERVER/api/agents/metrics" `
+        -Method POST -Body $body -ContentType "application/json" | Out-Null
+}
+
+# Recopilar hardware una sola vez (con proteccion ante errores de arranque)
+Write-Log "Recopilando hardware..."
+try {
+    $cs  = Get-CimInstance Win32_ComputerSystem
+    $cpu = Get-CimInstance Win32_Processor | Select-Object -First 1
+    $bio = Get-CimInstance Win32_BIOS
+    $os  = Get-CimInstance Win32_OperatingSystem
+    $hw  = @{
+        manufacturer  = $cs.Manufacturer
+        model         = $cs.Model
+        serial_number = $bio.SerialNumber
+        cpu_model     = $cpu.Name.Trim()
+        cpu_cores     = [int]$cpu.NumberOfCores
+        os_version    = $os.Version
+    }
+    $array = Get-CimInstance Win32_PhysicalMemoryArray -ErrorAction SilentlyContinue | Select-Object -First 1
+    $total = if ($array) { [int]$array.MemoryDevices } else { 0 }
+    $slots = @(Get-CimInstance Win32_PhysicalMemory -ErrorAction SilentlyContinue | ForEach-Object {
+        $t = switch ([int]$_.MemoryType) { 24{"DDR3"} 26{"DDR4"} 34{"DDR5"} default{"DDR"} }
+        @{ slot=$_.DeviceLocator; size_gb=[math]::Round($_.Capacity/1GB,0); type=$t
+           speed=if($_.Speed){"$($_.Speed) MT/s"}else{""}
+           manufacturer=($_.Manufacturer -replace '^\s+|\s+$','')
+           part_number=($_.PartNumber -replace '^\s+|\s+$',''); installed=$true }
+    })
+    $ram = @{ used=$slots.Count; total=if($total -gt 0){$total}else{$slots.Count}; detail=$slots }
+    Write-Log "Hardware OK - $($hw.cpu_model)"
+} catch {
+    Write-Log "ERROR recopilando hardware: $_"
+    $hw  = @{ manufacturer=""; model=""; serial_number=""; cpu_model=""; cpu_cores=0; os_version="" }
+    $ram = @{ used=0; total=0; detail=@() }
+}
+
+# Fase 2: cerrar la via de DoH para que el DNS central sea efectivo
+Disable-BrowserDoH
+Block-DoHEndpoints
+
+# Loop principal
+# El bloqueo (dominios/excepciones/horario/red) se revisa cada BLOCKLIST_POLL_SEC
+# fijo, independiente del intervalo de métricas — así una excepción que agregas o
+# quitas se refleja en segundos y no hay que esperar el intervalo (que puede ser
+# de varios minutos) configurado para el reporte de métricas.
+$BLOCKLIST_POLL_SEC = 10
+$prevSwHash = if (Test-Path $SW_HASH_FILE) { (Get-Content $SW_HASH_FILE -Raw).Trim() } else { "" }
+$loopCount   = 0
+$lastMetrics = [DateTime]::MinValue
+
+Write-Log "Loop iniciado - metricas cada ${INTERVAL}s, bloqueo cada ${BLOCKLIST_POLL_SEC}s"
+
+while ($true) {
+    try {
+        if (((Get-Date) - $lastMetrics).TotalSeconds -ge $INTERVAL) {
+            $swToSend      = @()
+            $pendingSwHash = $null
+            if ($loopCount % [math]::Max(1, [math]::Floor(300 / $INTERVAL)) -eq 0) {
+                $swList = Get-InstalledSoftware
+                $swJson = if ($swList.Count -gt 0) { $swList | ConvertTo-Json -Depth 3 -Compress } else { '[]' }
+                $swHash = ([System.BitConverter]::ToString(
+                    [System.Security.Cryptography.MD5]::Create().ComputeHash(
+                        [System.Text.Encoding]::UTF8.GetBytes($swJson)
+                    ))).Replace('-','').ToLower()
+                if ($swHash -ne $prevSwHash) {
+                    $swToSend      = $swList
+                    $pendingSwHash = $swHash
+                }
+            }
+
+            Send-Metrics $hw $ram $swToSend
+
+            if ($pendingSwHash) {
+                $prevSwHash = $pendingSwHash
+                Set-Content $SW_HASH_FILE $pendingSwHash
+            }
+
+            try {
+                $cfg      = Invoke-RestMethod -Uri "$SERVER/api/config/interval" -Method GET -TimeoutSec 3
+                $INTERVAL = [math]::Max(3, [int]$cfg.interval)
+            } catch {}
+
+            $lastMetrics = Get-Date
+            $loopCount++
+        }
+
+        $blockResult = Get-BlockList
+        if ($null -ne $blockResult) {
+            $shouldBlock = [bool]($blockResult.ShouldBlock -ne $false)
+            $allDomains  = @($blockResult.AllDomains)
+            Write-Log "BLOCKLIST should_block=$shouldBlock all_domains=$($allDomains.Count)"
+            if ($shouldBlock -and $allDomains.Count -gt 0) {
+                Set-CentralDns
+                Write-Log "BLOCKLIST modo=DNS-central (el server filtra)"
+            } else {
+                Restore-Dns
+                Write-Log "BLOCKLIST modo=off"
+            }
+        } else {
+            Write-Log "BLOCKLIST sin respuesta del servidor (null)"
+        }
+
+        Write-Log "OK - siguiente revision de bloqueo en ${BLOCKLIST_POLL_SEC}s"
+    } catch {
+        Write-Log "ERROR: $_"
+    }
+
+    Start-Sleep -Seconds $BLOCKLIST_POLL_SEC
+}
