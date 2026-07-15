@@ -588,21 +588,43 @@ def set_review_status(agent_id: str, data: dict, user = Depends(require_permissi
     status = data.get("status") or None
     if status not in (None, "en_observacion", "baja"):
         raise HTTPException(400, "Estado no válido.")
+    note = str(data.get("note") or "").strip()
+    today = datetime.utcnow().date()
+    by = (user.name or user.email if user else None)
+
+    # Todo cambio manual de estado (excepto volver a Normal) exige motivo y
+    # queda registrado en el historial de cambios, igual que una reparación.
+    if status in ("en_observacion", "baja"):
+        if not note:
+            raise HTTPException(400, "Indica el motivo.")
+        db.add(AgentChangeLog(
+            agent_id=agent_id,
+            field=("Baja" if status == "baja" else "EnObservacion"),
+            note=note, change_date=today, changed_by=by,
+        ))
+
     if status == "baja":
         # Dar de baja un equipo con una asignación abierta la cierra sola —
         # un equipo dado de baja no puede seguir figurando como "asignado".
         latest = db.query(AssignmentLog).filter(AssignmentLog.agent_id == agent_id)\
                     .order_by(desc(AssignmentLog.assigned_at), desc(AssignmentLog.created_at)).first()
         if latest and (latest.assigned_to or latest.assigned_to_name) and not latest.returned_at:
-            today = datetime.utcnow().date()
             latest.returned_at = today
             latest.return_notes = (latest.return_notes + " — Dado de baja") if latest.return_notes else "Dado de baja"
-            latest.changed_by = (user.name or user.email if user else None)
+            latest.changed_by = by
             a.assigned_user    = latest.assigned_to
             a.assigned_at       = latest.assigned_at
             a.assignment_notes = latest.delivery_notes
             a.returned_at      = latest.returned_at
             a.return_notes     = latest.return_notes
+    elif a.review_status in ("en_observacion", "baja") and status is None:
+        # Reactivación: vuelve a Normal desde un estado especial — se documenta
+        # también, para no perder el rastro de que hubo una vuelta atrás.
+        db.add(AgentChangeLog(
+            agent_id=agent_id, field="Reactivacion",
+            note=note or f"Vuelve a estado normal (antes: {a.review_status}).",
+            change_date=today, changed_by=by,
+        ))
     a.review_status = status
     db.commit()
     return {"ok": True}
@@ -696,6 +718,25 @@ def update_agent_change(agent_id: str, record_id: int, data: dict, user = Depend
     rec.changed_by = (user.name or user.email if user else None)
     db.commit()
     return {"ok": True}
+
+# ── Historial de equipos de una persona (misma tabla, vista al revés) ───────
+@router.get("/by-user/{user_id}/assignments")
+def get_assignments_by_user(user_id: str, user = Depends(require_permission("inventory", "view")), db: Session = Depends(get_db)):
+    rows = db.query(AssignmentLog).filter(AssignmentLog.assigned_to == user_id)\
+              .order_by(desc(AssignmentLog.assigned_at), desc(AssignmentLog.created_at)).all()
+    agent_ids = {r.agent_id for r in rows}
+    agents = {a.id: a for a in db.query(Agent).filter(Agent.id.in_(agent_ids)).all()} if agent_ids else {}
+    return [{
+        "id": r.id,
+        "agent_id": r.agent_id,
+        "hostname": agents[r.agent_id].hostname if r.agent_id in agents else None,
+        "display_name": (agents[r.agent_id].display_name or agents[r.agent_id].hostname) if r.agent_id in agents else "(equipo eliminado)",
+        "assigned_at": r.assigned_at.isoformat() if r.assigned_at else None,
+        "delivery_notes": r.delivery_notes,
+        "returned_at": r.returned_at.isoformat() if r.returned_at else None,
+        "return_notes": r.return_notes,
+        "changed_by": r.changed_by,
+    } for r in rows]
 
 # ── Historial de asignaciones (log de entregas/devoluciones) ────────────────
 @router.get("/{agent_id}/assignments")

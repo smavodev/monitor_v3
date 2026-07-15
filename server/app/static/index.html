@@ -630,6 +630,7 @@ canvas.spark{width:100%;height:80px}
         <table class="data-table" id="inventory-table">
         <thead><tr>
             <th style="width:36px"><input type="checkbox" id="inv-select-all" onchange="toggleSelectAllAgents(this.checked)"></th>
+            <th>Usuario</th><th>Estado equipo</th><th>Fecha compra</th><th>N° Factura</th>
             <th>Equipo</th><th>Fabricante</th><th>Modelo</th><th>Serie</th>
             <th>SO</th><th>Procesador</th><th>RAM</th>
             <th style="text-align:right">CPU %</th>
@@ -637,7 +638,6 @@ canvas.spark{width:100%;height:80px}
             <th style="text-align:right">Disco %</th>
             <th style="text-align:right">Temp</th>
             <th>Área</th><th>Tipo</th><th>Estado</th>
-            <th>Usuario</th><th>Estado equipo</th><th>Fecha compra</th><th>N° Factura</th>
             <th style="width:60px"></th>
           </tr></thead>
           <tbody id="inventory-body"></tbody>
@@ -1631,6 +1631,16 @@ canvas.spark{width:100%;height:80px}
   </div>
 </div>
 
+<div class="modal-overlay" id="modal-user-equipment">
+  <div class="modal" style="max-width:560px">
+    <div class="modal-title-row">
+      <div class="modal-title" id="modal-user-equipment-title">Equipos</div>
+      <button class="modal-close" onclick="closeModal('modal-user-equipment')" aria-label="Cerrar">✕</button>
+    </div>
+    <div id="user-equipment-list" style="max-height:400px;overflow-y:auto"></div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="modal-review-status">
   <div class="modal" style="max-width:420px">
     <div class="modal-title">Estado del equipo</div>
@@ -1642,6 +1652,10 @@ canvas.spark{width:100%;height:80px}
       </select>
     </div>
     <div id="rs-hint" style="font-size:12px;color:var(--text-dim);margin-top:-6px;margin-bottom:10px"></div>
+    <div class="form-group" id="rs-note-group">
+      <label class="form-label" id="rs-note-label">Motivo</label>
+      <textarea class="form-input" id="rs-note" rows="2" style="resize:vertical" placeholder="Ej: falla irreparable de placa, reemplazado por equipo nuevo…"></textarea>
+    </div>
     <div class="modal-footer">
       <button class="btn btn-ghost" onclick="closeModal('modal-review-status')">Cancelar</button>
       <button class="btn btn-primary" onclick="saveReviewStatus()">Guardar</button>
@@ -2450,6 +2464,10 @@ function renderInventory() {
     <td style="text-align:center" onclick="event.stopPropagation()">
       <input type="checkbox" data-id="${a.id}" onchange="toggleAgentSelect('${a.id}', this.checked)" ${selectedAgentIds.has(a.id) ? 'checked' : ''}>
     </td>
+    <td>${a.assigned_user_name || '--'}</td>
+    <td onclick="event.stopPropagation()">${(() => { const rs = reviewStatusInfo(a); return `<span class="badge ${rs.cls} clickable" title="Cambiar estado" onclick="openReviewStatusModal('${a.id}')">${rs.label}</span>`; })()}</td>
+    <td style="white-space:nowrap">${a.purchase_date || '--'}</td>
+    <td style="white-space:nowrap">${a.invoice_number || '--'}</td>
     <td>
       <div><strong>${a.display_name||a.hostname}</strong><br><span style="font-size:11px;color:var(--text-dim)">${a.hostname}</span></div>
     </td>
@@ -2466,10 +2484,6 @@ function renderInventory() {
     <td>${a.sede||'--'}</td><!-- área -->
     <td style="text-align:center;font-size:18px" title="${a.device_type||'Sin tipo'}">${deviceTypeIcon(a.device_type)}</td>
     <td><span class="badge ${a.status}">${a.status==='online'?'Online':'Offline'}</span></td>
-    <td>${a.assigned_user_name || '--'}</td>
-    <td onclick="event.stopPropagation()">${(() => { const rs = reviewStatusInfo(a); return `<span class="badge ${rs.cls} clickable" title="Cambiar estado" onclick="openReviewStatusModal('${a.id}')">${rs.label}</span>`; })()}</td>
-    <td style="white-space:nowrap">${a.purchase_date || '--'}</td>
-    <td style="white-space:nowrap">${a.invoice_number || '--'}</td>
     <td style="text-align:center;white-space:nowrap" onclick="event.stopPropagation()">
       <button class="btn btn-ghost" title="Historial de asignaciones" style="padding:2px 7px;font-size:14px;line-height:1" onclick="toggleAgentDetail('${a.id}','assignment')">👤</button>
       <button class="btn btn-ghost" title="Historial de cambios" style="padding:2px 7px;font-size:14px;line-height:1" onclick="toggleAgentDetail('${a.id}','changes')">🕑</button>
@@ -3021,14 +3035,46 @@ async function savePasswordPolicy() {
 function userActions(u) {
   const edit = `<button class="btn btn-xs btn-ghost" onclick="editUser('${u.id}','${encodeURIComponent(u.name)}','${u.email}','${u.role_id}',${u.has_access === false ? 0 : 1})">Editar</button>`;
   const reset = `<button class="btn btn-xs btn-ghost" onclick="openUserAccessModal('${u.id}','${encodeURIComponent(u.name)}',${u.active})">Restablecer contraseña</button>`;
+  const equip = `<button class="btn btn-xs btn-ghost" title="Ver equipos que tiene o tuvo asignados" onclick="openUserEquipmentModal('${u.id}','${encodeURIComponent(u.name)}')">Equipos</button>`;
   // Nadie puede desactivarse ni eliminarse a sí mismo: lo debe hacer otro admin
   // (o quien tenga permiso de gestión de usuarios).
   if (u.id === (currentUser && currentUser.id)) {
-    return edit + reset + ' <span style="font-size:11px;color:var(--text-dim);align-self:center">Tú</span>';
+    return edit + reset + equip + ' <span style="font-size:11px;color:var(--text-dim);align-self:center">Tú</span>';
   }
   const tog = `<button class="btn btn-xs ${u.active?'btn-ghost':'btn-primary'}" onclick="toggleUserActive('${u.id}','${encodeURIComponent(u.name)}',${u.active})">${u.active?'Desactivar':'Activar'}</button>`;
   const del = `<button class="btn btn-xs btn-danger" onclick="deleteUser('${u.id}')">Eliminar</button>`;
-  return edit + reset + tog + del;
+  return edit + reset + equip + tog + del;
+}
+
+async function openUserEquipmentModal(userId, nameEnc) {
+  const name = decodeURIComponent(nameEnc);
+  document.getElementById('modal-user-equipment-title').textContent = `Equipos de ${name}`;
+  const list = document.getElementById('user-equipment-list');
+  list.innerHTML = 'Cargando…';
+  openModal('modal-user-equipment');
+  try {
+    const rows = await api(`/api/agents/by-user/${userId}/assignments`);
+    list.innerHTML = (rows && rows.length) ? `
+      <table class="data-table" style="width:100%;font-size:13px">
+        <thead><tr><th>Equipo</th><th>Entrega</th><th>Devolución</th></tr></thead>
+        <tbody>
+          ${rows.map(r => {
+            const equipo = r.agent_id
+              ? `<a href="#" onclick="closeModal('modal-user-equipment');showView('inventory');document.getElementById('inv-filter-search').value='${(r.hostname||'').replace(/'/g,"\\'")}';applyInventoryFilter();return false;">${r.display_name}</a>`
+              : r.display_name;
+            const entrega = `${r.assigned_at || '—'}${r.delivery_notes ? `<div style="margin-top:2px">${r.delivery_notes}</div>` : ''}`;
+            const devolucion = (r.returned_at || r.return_notes)
+              ? `${r.returned_at || '—'}${r.return_notes ? `<div style="margin-top:2px">${r.return_notes}</div>` : ''}`
+              : '<span style="color:var(--text-dim)">Lo tiene actualmente</span>';
+            return `<tr>
+              <td style="font-weight:600;white-space:nowrap">${equipo}</td>
+              <td style="white-space:nowrap">${entrega}</td>
+              <td style="white-space:nowrap">${devolucion}</td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>` : '<div style="text-align:center;padding:16px 10px;color:var(--text-dim);font-size:13px;border:1px dashed var(--border);border-radius:10px">Sin equipos asignados, actuales ni pasados.</div>';
+  } catch (e) { list.innerHTML = '<div style="color:var(--red)">' + (e.message || 'Error') + '</div>'; }
 }
 
 async function fetchUsers() {
@@ -4201,7 +4247,7 @@ function deviceTypeIcon(t) {
   }
   return DEVICE_ICON_KEYS[icon] || ICON_OTHER;
 }
-const CHANGE_FIELD_LABEL = { RAM:'RAM', 'Batería':'Batería', Fuente:'Fuente de poder', Disco:'Disco', Otro:'Otro' };
+const CHANGE_FIELD_LABEL = { RAM:'RAM', 'Batería':'Batería', Fuente:'Fuente de poder', Disco:'Disco', Otro:'Otro', Baja:'Baja de equipo', EnObservacion:'En observación', Reactivacion:'Reactivación' };
 
 // Disponible/Asignado se derivan solos (según haya o no una asignación
 // abierta); En observación/Baja son estados manuales que pisan esa derivación.
@@ -4536,6 +4582,7 @@ function openReviewStatusModal(id) {
   if (!a) return;
   _reviewStatusAgentId = id;
   document.getElementById('rs-select').value = a.review_status || '';
+  document.getElementById('rs-note').value = '';
   updateReviewStatusHint();
   openModal('modal-review-status');
 }
@@ -4548,16 +4595,29 @@ function updateReviewStatusHint() {
   hint.textContent = (val === 'baja' && isAssigned)
     ? 'Este equipo está asignado actualmente — al darlo de baja se cerrará esa asignación automáticamente (devolución de hoy).'
     : '';
+  // El motivo es obligatorio para pasar a En observación/Baja (queda en el
+  // historial de cambios); al volver a Normal es opcional.
+  const noteGroup = document.getElementById('rs-note-group');
+  const needsNote = val === 'en_observacion' || val === 'baja';
+  noteGroup.style.display = '';
+  document.getElementById('rs-note-label').textContent = needsNote ? 'Motivo (obligatorio)' : 'Motivo (opcional)';
 }
 document.getElementById('rs-select') && document.getElementById('rs-select').addEventListener('change', updateReviewStatusHint);
 
 async function saveReviewStatus() {
   const id = _reviewStatusAgentId;
   if (!id) return;
+  const status = document.getElementById('rs-select').value || null;
+  const note = document.getElementById('rs-note').value.trim();
+  if ((status === 'en_observacion' || status === 'baja') && !note) {
+    alert('Indica el motivo.');
+    return;
+  }
   try {
-    await api(`/api/agents/${id}/review-status`, {method:'PUT', body: { status: document.getElementById('rs-select').value || null }});
+    await api(`/api/agents/${id}/review-status`, {method:'PUT', body: { status, note }});
     closeModal('modal-review-status');
     await fetchAgents();
+    if (expandedAgentId === id && expandedPanel === 'changes') await renderAgentDetail(id, 'changes');
   } catch (e) { alert(e.message || 'No se pudo actualizar el estado del equipo.'); }
 }
 
