@@ -4316,15 +4316,6 @@ function toggleAgentDetail(id, panel) {
   renderAgentDetail(id, panel);
 }
 
-function toggleAssignmentMore(id, extra) {
-  const more = document.getElementById('inv-assign-more-' + id);
-  const btn = document.getElementById('inv-assign-toggle-' + id);
-  if (!more || !btn) return;
-  const show = more.style.display === 'none';
-  more.style.display = show ? '' : 'none';
-  btn.textContent = show ? '− Ver menos' : ('+ Ver ' + extra + ' más');
-}
-
 async function renderAgentDetail(id, panel) {
   const el = document.getElementById('inv-detail-content-' + id);
   if (!el) return;
@@ -4361,7 +4352,6 @@ async function renderAgentDetail(id, panel) {
     const list = document.getElementById('inv-assign-' + id);
     try {
       const rows = await api(`/api/agents/${id}/assignments`);
-      const ASSIGN_PAGE = 3;
       const trs = (rows || []).map(r => {
         const name = r.assigned_to_name || (r.assigned_to ? 'ID ' + r.assigned_to : '—');
         const entrega = `${r.assigned_at || '—'}${r.delivery_notes ? `<div style="margin-top:2px">${r.delivery_notes}</div>` : ''}`;
@@ -4375,14 +4365,11 @@ async function renderAgentDetail(id, panel) {
           <td style="white-space:nowrap">${devolucion}</td>
         </tr>`;
       });
-      const extra = trs.length - ASSIGN_PAGE;
       list.innerHTML = trs.length ? (
         `<table class="data-table" style="width:100%;font-size:13px">
           <thead><tr><th>Asignado a</th><th>Entrega</th><th>Devolución</th></tr></thead>
-          <tbody>${trs.slice(0, ASSIGN_PAGE).join('')}</tbody>
-          ${extra > 0 ? `<tbody id="inv-assign-more-${id}" style="display:none">${trs.slice(ASSIGN_PAGE).join('')}</tbody>` : ''}
-        </table>` +
-        (extra > 0 ? `<button class="btn btn-ghost btn-sm" id="inv-assign-toggle-${id}" style="margin-top:4px" onclick="toggleAssignmentMore('${id}', ${extra})">+ Ver ${extra} más</button>` : '')
+          <tbody>${trs.join('')}</tbody>
+        </table>`
       ) : '<div style="text-align:center;padding:16px 10px;color:var(--text-dim);font-size:13px;border:1px dashed var(--border);border-radius:10px">📋 Sin asignaciones registradas para este equipo.</div>';
       // Asignar/Devolver ya están disponibles seleccionando el equipo (checkbox)
       // y usando la barra de acciones de Inventario — no hace falta duplicarlos aquí.
