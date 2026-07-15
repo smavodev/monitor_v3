@@ -248,6 +248,13 @@ canvas.spark{width:100%;height:80px}
 .data-table td{padding:12px;font-size:13px;border-bottom:1px solid var(--border)}
 .data-table tr:last-child td{border-bottom:none}
 .data-table tr:hover td{background:var(--surface2)}
+/* Filtrando Inventario por usuario: vista simplificada — oculta columnas y
+   acciones que no aportan a "qué equipos tuvo esta persona" (Estado equipo,
+   Fecha compra, N° Factura y los íconos de historial por equipo). */
+#inventory-table.user-filter-active th:nth-child(3), #inventory-table.user-filter-active td:nth-child(3),
+#inventory-table.user-filter-active th:nth-child(4), #inventory-table.user-filter-active td:nth-child(4),
+#inventory-table.user-filter-active th:nth-child(5), #inventory-table.user-filter-active td:nth-child(5),
+#inventory-table.user-filter-active th:nth-child(20), #inventory-table.user-filter-active td:nth-child(20){display:none}
 /* ── Modal ── */
 .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:200;display:none;align-items:center;justify-content:center;padding:24px;overflow-y:auto}
 .modal-overlay.open{display:flex}
@@ -2451,6 +2458,9 @@ function renderInventory() {
 
   const info = document.getElementById('inv-results-info');
   if (info) info.textContent = `${filtered.length} de ${allAgents.length} equipos`;
+
+  const invTable = document.getElementById('inventory-table');
+  if (invTable) invTable.classList.toggle('user-filter-active', !!userId);
 
   const historyBtn = document.getElementById('inv-filter-user-history');
   if (historyBtn) {
