@@ -80,23 +80,30 @@ def _build_state():
     db = Session()
     try:
         active = db.query(BlockedSite).filter(BlockedSite.active == True).all()
-        # Ordenado por last_seen ascendente: si dos equipos comparten IP
-        # (mismo router/NAT), el bucle de abajo va pisando by_ip[ip] en este
-        # orden, así que el último en escribir —y el que queda vigente— es
-        # el visto más recientemente (antes no había order_by y el que
-        # ganaba el empate era arbitrario).
         agents = db.query(Agent).filter(Agent.ip.isnot(None), Agent.ip != "")\
                     .order_by(Agent.last_seen.asc()).all()
 
         by_ip = {}
         for a in agents:
-            # Si dos equipos comparten IP momentáneamente (DHCP cambiando),
-            # nos quedamos con el visto más recientemente.
-            by_ip[a.ip] = {
-                "agent_id": a.id,
-                "blocked": resolve_domains_for_agent(a, active),
-                "all": resolve_all_configured_domains(a, active),
-            }
+            blocked = resolve_domains_for_agent(a, active)
+            all_domains = resolve_all_configured_domains(a, active)
+            existing = by_ip.get(a.ip)
+            if existing:
+                # Varios equipos comparten esta IP (mismo router/NAT de
+                # oficina, no solo un cambio momentáneo de DHCP): quedarse
+                # con uno solo dejaba que una excepción propia de UN equipo
+                # (ej. LAP-ISAAVEDRA con youtube.com sin bloquear) destapara
+                # el dominio para TODOS los demás equipos detrás de esa IP
+                # cada vez que ese agente era "el último visto". Se une en
+                # vez de pisar: un dominio se bloquea para la IP si al menos
+                # uno de los equipos detrás de ella debería bloquearlo. Los
+                # intentos se siguen atribuyendo al equipo visto más
+                # recientemente (agent_id), solo para efectos del reporte.
+                existing["blocked"] |= blocked
+                existing["all"] |= all_domains
+                existing["agent_id"] = a.id
+            else:
+                by_ip[a.ip] = {"agent_id": a.id, "blocked": blocked, "all": all_domains}
 
         return {
             "ts": time.time(),
