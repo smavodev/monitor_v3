@@ -91,6 +91,24 @@ def _validate_assignment_dates(db: Session, agent_id: str, assigned_at, returned
     if nxt and returned_at and nxt.assigned_at < returned_at:
         raise HTTPException(400, f"La fecha de devolución no puede superponerse con la siguiente asignación ({nxt.assigned_at.isoformat()}).")
 
+def _sync_agent_from_latest_assignment(a: "Agent", latest):
+    """Refleja en el agente el registro de asignación más reciente. Si ese
+    registro ya fue devuelto, nadie lo tiene actualmente — se limpia
+    assigned_user (columna "Usuario") aunque el historial completo del
+    registro (fechas, notas) se conserva para consulta."""
+    if not latest:
+        a.assigned_user = None
+        a.assigned_at = None
+        a.assignment_notes = None
+        a.returned_at = None
+        a.return_notes = None
+        return
+    a.assigned_user    = latest.assigned_to if not latest.returned_at else None
+    a.assigned_at       = latest.assigned_at
+    a.assignment_notes = latest.delivery_notes
+    a.returned_at      = latest.returned_at
+    a.return_notes     = latest.return_notes
+
 # ── Schemas de entrada del agente ──────────────────────────────────────────
 class DiskInfo(BaseModel):
     device: str
@@ -612,11 +630,7 @@ def set_review_status(agent_id: str, data: dict, user = Depends(require_permissi
             latest.returned_at = today
             latest.return_notes = (latest.return_notes + " — Dado de baja") if latest.return_notes else "Dado de baja"
             latest.changed_by = by
-            a.assigned_user    = latest.assigned_to
-            a.assigned_at       = latest.assigned_at
-            a.assignment_notes = latest.delivery_notes
-            a.returned_at      = latest.returned_at
-            a.return_notes     = latest.return_notes
+            _sync_agent_from_latest_assignment(a, latest)
     elif a.review_status in ("en_observacion", "baja") and status is None:
         # Reactivación: vuelve a Normal desde un estado especial — se documenta
         # también, para no perder el rastro de que hubo una vuelta atrás.
@@ -790,12 +804,7 @@ def add_assignment(agent_id: str, data: dict, user = Depends(require_permission(
     # está cargando un registro histórico con fecha anterior a otro ya existente.
     latest = db.query(AssignmentLog).filter(AssignmentLog.agent_id == agent_id)\
                 .order_by(desc(AssignmentLog.assigned_at), desc(AssignmentLog.created_at)).first()
-    if latest:
-        a.assigned_user    = latest.assigned_to
-        a.assigned_at       = latest.assigned_at
-        a.assignment_notes = latest.delivery_notes
-        a.returned_at      = latest.returned_at
-        a.return_notes     = latest.return_notes
+    _sync_agent_from_latest_assignment(a, latest)
     db.commit()
     return {"ok": True}
 
@@ -829,16 +838,12 @@ def update_assignment(agent_id: str, record_id: int, data: dict, user = Depends(
     if "return_notes" in data:   rec.return_notes = data.get("return_notes") or None
     rec.changed_by = (user.name or user.email if user else None)
 
-    # El registro más reciente por fecha de asignación es el que se refleja
-    # en el resumen del agente (igual que hace el POST al crear uno nuevo).
+    # El resumen del agente siempre se recalcula desde el registro más
+    # reciente por fecha de asignación — de paso, autocorrige el resumen si
+    # había quedado desincronizado por datos viejos.
     latest = db.query(AssignmentLog).filter(AssignmentLog.agent_id == agent_id)\
                 .order_by(desc(AssignmentLog.assigned_at), desc(AssignmentLog.created_at)).first()
-    if latest and latest.id == rec.id:
-        a.assigned_user    = rec.assigned_to
-        a.assigned_at       = rec.assigned_at
-        a.assignment_notes = rec.delivery_notes
-        a.returned_at      = rec.returned_at
-        a.return_notes     = rec.return_notes
+    _sync_agent_from_latest_assignment(a, latest)
     db.commit()
     return {"ok": True}
 
@@ -859,11 +864,7 @@ def delete_assignment(agent_id: str, record_id: int, user = Depends(require_perm
         new_latest = db.query(AssignmentLog).filter(AssignmentLog.agent_id == agent_id)\
                         .order_by(desc(AssignmentLog.assigned_at), desc(AssignmentLog.created_at)).first()
         if a:
-            a.assigned_user    = new_latest.assigned_to if new_latest else None
-            a.assigned_at      = new_latest.assigned_at if new_latest else None
-            a.assignment_notes = new_latest.delivery_notes if new_latest else None
-            a.returned_at      = new_latest.returned_at if new_latest else None
-            a.return_notes     = new_latest.return_notes if new_latest else None
+            _sync_agent_from_latest_assignment(a, new_latest)
     db.commit()
     return {"ok": True}
 
