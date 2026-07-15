@@ -4614,6 +4614,10 @@ async function saveAssignment() {
     }
     closeModal('modal-assignment');
     await fetchAgents();
+    // Justo después de devolver, mostrar el historial completo de una — así
+    // se ve enseguida a quién estaba asignado, en vez de colapsarlo a "Sin
+    // asignación vigente" y obligar a un click extra.
+    if (_assignmentMode === 'return') _assignmentPanelShowAll = true;
     if (expandedAgentId === id && expandedPanel === 'assignment') await renderAgentDetail(id, 'assignment');
     if (selectedAgentIds.has(id)) { _toolbarAssignmentStatusFor = null; refreshToolbarAssignmentStatus(); }
     const fresh = allAgents.find(a => a.id === id);
