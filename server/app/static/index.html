@@ -4670,12 +4670,10 @@ function updateReviewStatusHint() {
   hint.textContent = (val === 'baja' && isAssigned)
     ? 'Este equipo está asignado actualmente — al darlo de baja se cerrará esa asignación automáticamente (devolución de hoy).'
     : '';
-  // El motivo es obligatorio para pasar a En observación/Baja (queda en el
-  // historial de cambios); al volver a Normal es opcional.
-  const noteGroup = document.getElementById('rs-note-group');
-  const needsNote = val === 'en_observacion' || val === 'baja';
-  noteGroup.style.display = '';
-  document.getElementById('rs-note-label').textContent = needsNote ? 'Motivo (obligatorio)' : 'Motivo (opcional)';
+  // El motivo es obligatorio siempre (En observación, Baja o al volver a
+  // Normal/Disponible) — queda registrado en el historial de cambios.
+  document.getElementById('rs-note-group').style.display = '';
+  document.getElementById('rs-note-label').textContent = 'Motivo (obligatorio)';
 }
 document.getElementById('rs-select') && document.getElementById('rs-select').addEventListener('change', updateReviewStatusHint);
 
@@ -4684,7 +4682,7 @@ async function saveReviewStatus() {
   if (!id) return;
   const status = document.getElementById('rs-select').value || null;
   const note = document.getElementById('rs-note').value.trim();
-  if ((status === 'en_observacion' || status === 'baja') && !note) {
+  if (!note) {
     alert('Indica el motivo.');
     return;
   }

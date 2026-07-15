@@ -607,14 +607,14 @@ def set_review_status(agent_id: str, data: dict, user = Depends(require_permissi
     if status not in (None, "en_observacion", "baja"):
         raise HTTPException(400, "Estado no válido.")
     note = str(data.get("note") or "").strip()
+    if not note:
+        raise HTTPException(400, "Indica el motivo.")
     today = datetime.utcnow().date()
     by = (user.name or user.email if user else None)
 
-    # Todo cambio manual de estado (excepto volver a Normal) exige motivo y
-    # queda registrado en el historial de cambios, igual que una reparación.
+    # Todo cambio manual de estado exige motivo y queda registrado en el
+    # historial de cambios, igual que una reparación.
     if status in ("en_observacion", "baja"):
-        if not note:
-            raise HTTPException(400, "Indica el motivo.")
         db.add(AgentChangeLog(
             agent_id=agent_id,
             field=("Baja" if status == "baja" else "EnObservacion"),
@@ -636,8 +636,7 @@ def set_review_status(agent_id: str, data: dict, user = Depends(require_permissi
         # también, para no perder el rastro de que hubo una vuelta atrás.
         db.add(AgentChangeLog(
             agent_id=agent_id, field="Reactivacion",
-            note=note or f"Vuelve a estado normal (antes: {a.review_status}).",
-            change_date=today, changed_by=by,
+            note=note, change_date=today, changed_by=by,
         ))
     a.review_status = status
     db.commit()
