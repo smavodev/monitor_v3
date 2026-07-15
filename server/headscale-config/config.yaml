@@ -1,7 +1,7 @@
 # Headscale (servidor de coordinacion self-hosted, tipo Tailscale) para
 # identificar cada agente por una IP unica del "tailnet" en vez de la IP
 # publica compartida de la oficina. Ver dns_blocker.py (campo tailnet_ip).
-server_url: http://52.73.185.45:8090
+server_url: https://vpn.smarthrlatam.com:8090
 listen_addr: 0.0.0.0:8090
 metrics_listen_addr: 127.0.0.1:9091
 grpc_listen_addr: 127.0.0.1:50443
@@ -62,9 +62,14 @@ acme_email: ""
 tls_letsencrypt_hostname: ""
 tls_letsencrypt_cache_dir: /var/lib/headscale/cache
 tls_letsencrypt_challenge_type: HTTP-01
-tls_letsencrypt_listen: ":http"
-tls_cert_path: ""
-tls_key_path: ""
+
+# Certificado propio, firmado por la MISMA CA que SmartMonitor ya instala en
+# cada equipo (para la pagina de bloqueo HTTPS) - ver server/app/tls_ca.py.
+# Como esa CA ya es de confianza en cada laptop, este certificado tambien lo
+# es automaticamente, sin pasos extra en el cliente ni depender de Let's
+# Encrypt/ACME (que requeria pelear con el puerto 443 ya usado por nginx).
+tls_cert_path: "/etc/headscale/headscale-cert.pem"
+tls_key_path: "/etc/headscale/headscale-key.pem"
 
 log:
   level: info

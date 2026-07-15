@@ -41,8 +41,8 @@ services:
       ADMIN_EMAIL: admin@smartmonitor.local
       ADMIN_PASSWORD: Admin2024!
       DNS_BLOCK_REDIRECT_IP: "172.27.142.107"
-      HEADSCALE_URL: "http://127.0.0.1:8090"
-      HEADSCALE_PUBLIC_URL: "http://172.27.142.107:8090"
+      HEADSCALE_URL: "https://127.0.0.1:8090"
+      HEADSCALE_PUBLIC_URL: "https://172.27.142.107:8090"
       HEADSCALE_API_KEY: ""
       HEADSCALE_USER_ID: "1"
     depends_on:

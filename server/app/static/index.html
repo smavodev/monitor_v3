@@ -361,6 +361,10 @@ canvas.spark{width:100%;height:80px}
         <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 5.99L19.53 19H4.47L12 5.99M12 2L1 21h22L12 2zm1 14h-2v2h2v-2zm0-6h-2v4h2v-4z"/></svg>
         Intentos bloqueados
       </button>
+      <button class="nav-item admin-only" id="nav-parental-tunnel" onclick="showView('parental-tunnel')" style="display:none">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
+        Túnel WireGuard
+      </button>
     </div>
 
     <div class="sidenav-section">
@@ -921,8 +925,20 @@ canvas.spark{width:100%;height:80px}
 
       <div class="card">
         <table class="data-table">
-          <thead><tr><th>Fecha</th><th>Equipo</th><th>Área</th><th>Dominio</th><th>Estado</th><th style="text-align:right">Intentos</th><th>Última vez</th></tr></thead>
+          <thead><tr><th>Fecha</th><th>Equipo</th><th>IP túnel</th><th>Área</th><th>Dominio</th><th>Estado</th><th style="text-align:right">Intentos</th><th>Última vez</th></tr></thead>
           <tbody id="attempts-body"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="view-parental-tunnel" class="view">
+      <div class="page-header">
+        <div><div class="page-title">Control parental — Túnel WireGuard</div><div class="page-sub">Equipos conectados al túnel (Headscale): las excepciones individuales solo son 100% confiables para los que aparecen aquí</div></div>
+      </div>
+      <div class="card">
+        <table class="data-table">
+          <thead><tr><th>Equipo</th><th>Serie</th><th>IP del túnel</th><th>Estado</th></tr></thead>
+          <tbody id="tunnel-body"></tbody>
         </table>
       </div>
     </div>
@@ -1847,6 +1863,7 @@ const NAV_SECTION_MAP = {
   'nav-parental-blocked': 'parental_blocked',
   'nav-parental-schedule': 'parental_schedule',
   'nav-parental-attempts': 'parental_attempts',
+  'nav-parental-tunnel': 'parental_attempts',
   'nav-users': 'users',
   'nav-roles': 'users',
   'nav-settings': 'settings',
@@ -1999,7 +2016,7 @@ function showView(name) {
   if (viewEl) viewEl.classList.add('active');
   const navEl = document.getElementById(`nav-${name}`);
   if (navEl) navEl.classList.add('active');
-   const saveable = ['dashboard','inventory','events','discovery','users','roles','areas','parental-categories','parental-blocked','parental-schedule','parental-attempts','settings'];
+   const saveable = ['dashboard','inventory','events','discovery','users','roles','areas','parental-categories','parental-blocked','parental-schedule','parental-attempts','parental-tunnel','settings'];
   if (saveable.includes(name)) localStorage.setItem('sm_view', name);
 
   if (name === 'inventory')  { renderInventory(); fetchUsers().then(renderInventory); fetchDeviceTypes(); }
@@ -2011,6 +2028,7 @@ function showView(name) {
   if (name === 'parental-categories') fetchParentalCategories();
   if (name === 'parental-schedule') { fetchDefaultSchedule(); fetchScheduleOverrides(); fetchAreaSchedules(); }
   if (name === 'parental-attempts') { initBlockAttempts(); attemptsAutoRefreshTimer = setInterval(fetchBlockAttempts, 10000); }
+  if (name === 'parental-tunnel') fetchWireguardTunnel();
   if (name === 'settings')   { fetchPasswordPolicy(); loadSettings(); }
   if (name === 'discovery')  _initDiscovery();
 }
@@ -4217,12 +4235,26 @@ async function fetchBlockAttempts() {
     <tr>
       <td>${r.date}</td>
       <td>${r.agent_name}</td>
+      <td style="font-size:12px;color:var(--text-mid)">${r.tailnet_ip || '—'}</td>
       <td>${r.sede_name || '--'}</td>
       <td>${r.domain}</td>
       <td>${r.blocked ? '<span class="badge offline">Bloqueado</span>' : '<span class="badge active">Exitoso</span>'}${r.has_exception ? `<div style="font-size:11px;color:var(--text-dim);margin-top:3px">Excepción: ${r.exception_reason || 'sin motivo'}${r.exception_expires ? ` · expira ${r.exception_expires.slice(0,10)}` : ''}</div>` : ''}</td>
       <td style="text-align:right;font-weight:600">${r.count}</td>
       <td style="font-size:12px;color:var(--text-mid)">${fmtLocalDatetime(r.last_seen)}</td>
-    </tr>`).join('') : `<tr><td colspan="7" style="text-align:center;color:var(--text-dim);padding:24px">Sin intentos registrados en este rango.</td></tr>`;
+    </tr>`).join('') : `<tr><td colspan="8" style="text-align:center;color:var(--text-dim);padding:24px">Sin intentos registrados en este rango.</td></tr>`;
+}
+
+async function fetchWireguardTunnel() {
+  const data = await api('/api/agents');
+  if (!data) return;
+  const rows = [...data].sort((a, b) => (b.tailnet_ip ? 1 : 0) - (a.tailnet_ip ? 1 : 0));
+  document.getElementById('tunnel-body').innerHTML = rows.length ? rows.map(a => `
+    <tr>
+      <td>${a.display_name || a.hostname}</td>
+      <td style="font-size:12px;color:var(--text-mid)">${a.serial_number || '—'}</td>
+      <td style="font-size:12px;color:var(--text-mid)">${a.tailnet_ip || '—'}</td>
+      <td>${a.tailnet_ip ? '<span class="badge active">Conectado</span>' : '<span class="badge offline">No conectado</span>'}</td>
+    </tr>`).join('') : `<tr><td colspan="4" style="text-align:center;color:var(--text-dim);padding:24px">No hay equipos registrados.</td></tr>`;
 }
 
 async function fetchAttemptsRetention() {

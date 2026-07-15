@@ -337,6 +337,7 @@ def list_agents(user = Depends(require_permission("dashboard", "view")), db: Ses
             "id": a.id,
             "hostname": a.hostname,
             "display_name": a.display_name or a.hostname,
+            "tailnet_ip": a.tailnet_ip,
             "status": a.status,
             "last_seen_ago": ago,
             "os": a.os,

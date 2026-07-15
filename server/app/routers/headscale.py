@@ -1,5 +1,14 @@
 from fastapi import APIRouter, HTTPException
-import os, urllib.request, json
+import os, ssl, urllib.request, json
+
+# Llamada interna (mismo host, 127.0.0.1) al puerto TLS de Headscale: el
+# certificado real es para el dominio publico (ver HEADSCALE_PUBLIC_URL), no
+# para 127.0.0.1, asi que la verificacion de hostname fallaria aunque la
+# conexion en si sea local y de confianza. Se desactiva solo para esta
+# llamada interna, nunca para lo que ve el agente (que usa el dominio real).
+_INTERNAL_SSL_CTX = ssl.create_default_context()
+_INTERNAL_SSL_CTX.check_hostname = False
+_INTERNAL_SSL_CTX.verify_mode = ssl.CERT_NONE
 
 router = APIRouter(prefix="/api/agents/wireguard", tags=["wireguard"])
 
@@ -47,7 +56,8 @@ def create_preauthkey(data: dict):
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=10) as r:
+        ctx = _INTERNAL_SSL_CTX if HEADSCALE_URL.startswith("https://") else None
+        with urllib.request.urlopen(req, timeout=10, context=ctx) as r:
             resp = json.loads(r.read())
     except Exception as e:
         raise HTTPException(502, f"No se pudo generar la pre-auth key en Headscale: {e}")

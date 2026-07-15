@@ -89,6 +89,7 @@ def _fmt(r: BlockAttempt, agents_by_id: dict, sedes_by_id: dict, exceptions: lis
     return {
         "id": r.id, "agent_id": r.agent_id,
         "agent_name": (a.display_name or a.hostname) if a else "—",
+        "tailnet_ip": (a.tailnet_ip if a else None),
         "sede_name": sede_name,
         "domain": r.domain, "count": r.count, "blocked": r.blocked,
         "has_exception": has_exception, "exception_reason": exc_reason, "exception_expires": exc_expires,
