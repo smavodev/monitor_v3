@@ -1,4 +1,10 @@
 @echo off
+REM Este archivo debe guardarse con fin de linea CRLF (no LF). Con LF puro,
+REM el bloque con continuacion de linea "^" (instalacion del certificado CA,
+REM mas abajo) rompe el parser de cmd.exe y ejecuta fragmentos sueltos como
+REM comandos ("IP", "M", "9009" no reconocidos) en vez de instalar. Si un
+REM editor/herramienta vuelve a guardarlo en LF, reconvertir a CRLF antes
+REM de distribuirlo.
 chcp 65001 >nul 2>&1
 title SmartMonitor v3 - Instalador Windows (instalacion limpia)
 
