@@ -69,6 +69,28 @@ def _parse_date(v):
     except Exception:
         return None
 
+def _validate_assignment_dates(db: Session, agent_id: str, assigned_at, returned_at, exclude_id=None):
+    """Evita solapar asignaciones: la fecha de asignación de un registro no
+    puede caer antes de que se haya devuelto el equipo en el registro
+    anterior, ni su devolución puede pisar el inicio de la siguiente
+    asignación ya registrada."""
+    if assigned_at and returned_at and returned_at < assigned_at:
+        raise HTTPException(400, "La fecha de devolución no puede ser anterior a la fecha de asignación.")
+    if not assigned_at:
+        return
+    q = db.query(AssignmentLog).filter(AssignmentLog.agent_id == agent_id)
+    if exclude_id is not None:
+        q = q.filter(AssignmentLog.id != exclude_id)
+    others = [o for o in q.all() if o.assigned_at]
+
+    prev = max((o for o in others if o.assigned_at <= assigned_at), key=lambda o: o.assigned_at, default=None)
+    if prev and prev.returned_at and prev.returned_at > assigned_at:
+        raise HTTPException(400, f"La fecha de asignación no puede ser anterior a la devolución del registro anterior ({prev.returned_at.isoformat()}).")
+
+    nxt = min((o for o in others if o.assigned_at >= assigned_at), key=lambda o: o.assigned_at, default=None)
+    if nxt and returned_at and nxt.assigned_at < returned_at:
+        raise HTTPException(400, f"La fecha de devolución no puede superponerse con la siguiente asignación ({nxt.assigned_at.isoformat()}).")
+
 # ── Schemas de entrada del agente ──────────────────────────────────────────
 class DiskInfo(BaseModel):
     device: str
@@ -606,6 +628,29 @@ def add_agent_change(agent_id: str, data: dict, user = Depends(require_permissio
     db.commit()
     return {"ok": True}
 
+@router.put("/{agent_id}/changes/{record_id}")
+def update_agent_change(agent_id: str, record_id: int, data: dict, user = Depends(require_permission("inventory", "edit")), db: Session = Depends(get_db)):
+    """Corrige un registro ya cargado del historial de cambios (p.ej. una
+    fecha mal escrita) sin perder la trazabilidad de quién lo registró."""
+    rec = db.query(AgentChangeLog).filter(AgentChangeLog.id == record_id, AgentChangeLog.agent_id == agent_id).first()
+    if not rec:
+        raise HTTPException(404, "Registro no encontrado")
+    field = str(data.get("field") or "").strip()
+    change_date = data.get("change_date")
+    note = str(data.get("note") or "").strip()
+    if not field or not change_date or not note:
+        raise HTTPException(400, "Todos los campos son obligatorios: componente, fecha de cambio y motivo.")
+    try:
+        cd = datetime.strptime(change_date, "%Y-%m-%d").date()
+    except Exception:
+        raise HTTPException(400, "La fecha de cambio no es válida (AAAA-MM-DD).")
+    rec.field = field
+    rec.change_date = cd
+    rec.note = note
+    rec.changed_by = (user.name or user.email if user else None)
+    db.commit()
+    return {"ok": True}
+
 # ── Historial de asignaciones (log de entregas/devoluciones) ────────────────
 @router.get("/{agent_id}/assignments")
 def get_assignments(agent_id: str, user = Depends(require_permission("inventory", "view")), db: Session = Depends(get_db)):
@@ -613,7 +658,7 @@ def get_assignments(agent_id: str, user = Depends(require_permission("inventory"
     if not a:
         raise HTTPException(404, "Agente no encontrado")
     rows = db.query(AssignmentLog).filter(AssignmentLog.agent_id == agent_id)\
-              .order_by(desc(AssignmentLog.created_at), desc(AssignmentLog.assigned_at)).all()
+              .order_by(desc(AssignmentLog.assigned_at), desc(AssignmentLog.created_at)).all()
     return [{
         "id": r.id,
         "assigned_to": r.assigned_to,
@@ -638,23 +683,32 @@ def add_assignment(agent_id: str, data: dict, user = Depends(require_permission(
     if not name and assigned_to:
         u = db.query(User).filter(User.id == assigned_to).first()
         name = u.name if u else None
+    assigned_at = _parse_date(data.get("assigned_at"))
+    returned_at = _parse_date(data.get("returned_at"))
+    _validate_assignment_dates(db, agent_id, assigned_at, returned_at)
     rec = AssignmentLog(
         agent_id=agent_id,
         assigned_to=assigned_to,
         assigned_to_name=name,
-        assigned_at=_parse_date(data.get("assigned_at")),
+        assigned_at=assigned_at,
         delivery_notes=data.get("delivery_notes") or None,
-        returned_at=_parse_date(data.get("returned_at")),
+        returned_at=returned_at,
         return_notes=data.get("return_notes") or None,
         changed_by=(user.name or user.email if user else None),
     )
     db.add(rec)
-    # La "asignación actual" del agente refleja el último registro del log
-    a.assigned_user   = assigned_to
-    a.assigned_at     = rec.assigned_at
-    a.assignment_notes = rec.delivery_notes
-    a.returned_at     = rec.returned_at
-    a.return_notes    = rec.return_notes
+    db.flush()
+    # La "asignación actual" del agente refleja el registro más reciente por
+    # fecha de asignación — no necesariamente el que se acaba de crear, si se
+    # está cargando un registro histórico con fecha anterior a otro ya existente.
+    latest = db.query(AssignmentLog).filter(AssignmentLog.agent_id == agent_id)\
+                .order_by(desc(AssignmentLog.assigned_at), desc(AssignmentLog.created_at)).first()
+    if latest:
+        a.assigned_user    = latest.assigned_to
+        a.assigned_at       = latest.assigned_at
+        a.assignment_notes = latest.delivery_notes
+        a.returned_at      = latest.returned_at
+        a.return_notes     = latest.return_notes
     db.commit()
     return {"ok": True}
 
@@ -670,6 +724,10 @@ def update_assignment(agent_id: str, record_id: int, data: dict, user = Depends(
     if not rec:
         raise HTTPException(404, "Registro no encontrado")
 
+    new_assigned_at = _parse_date(data.get("assigned_at")) if "assigned_at" in data else rec.assigned_at
+    new_returned_at = _parse_date(data.get("returned_at")) if "returned_at" in data else rec.returned_at
+    _validate_assignment_dates(db, agent_id, new_assigned_at, new_returned_at, exclude_id=rec.id)
+
     if "assigned_to" in data or "assigned_to_name" in data:
         assigned_to = data.get("assigned_to") or None
         name = data.get("assigned_to_name")
@@ -678,16 +736,16 @@ def update_assignment(agent_id: str, record_id: int, data: dict, user = Depends(
             name = u.name if u else None
         rec.assigned_to = assigned_to
         rec.assigned_to_name = name
-    if "assigned_at" in data:    rec.assigned_at = _parse_date(data.get("assigned_at"))
+    rec.assigned_at = new_assigned_at
+    rec.returned_at = new_returned_at
     if "delivery_notes" in data: rec.delivery_notes = data.get("delivery_notes") or None
-    if "returned_at" in data:    rec.returned_at = _parse_date(data.get("returned_at"))
     if "return_notes" in data:   rec.return_notes = data.get("return_notes") or None
     rec.changed_by = (user.name or user.email if user else None)
 
-    # Si es el registro de asignación más reciente, reflejar los cambios
-    # también en el agente (igual que hace el POST al crear uno nuevo).
+    # El registro más reciente por fecha de asignación es el que se refleja
+    # en el resumen del agente (igual que hace el POST al crear uno nuevo).
     latest = db.query(AssignmentLog).filter(AssignmentLog.agent_id == agent_id)\
-                .order_by(desc(AssignmentLog.created_at)).first()
+                .order_by(desc(AssignmentLog.assigned_at), desc(AssignmentLog.created_at)).first()
     if latest and latest.id == rec.id:
         a.assigned_user    = rec.assigned_to
         a.assigned_at       = rec.assigned_at
@@ -703,7 +761,7 @@ def delete_assignment(agent_id: str, record_id: int, user = Depends(require_perm
     if not rec:
         raise HTTPException(404, "Registro no encontrado")
     was_latest = db.query(AssignmentLog).filter(AssignmentLog.agent_id == agent_id)\
-                    .order_by(desc(AssignmentLog.created_at)).first().id == rec.id
+                    .order_by(desc(AssignmentLog.assigned_at), desc(AssignmentLog.created_at)).first().id == rec.id
     db.delete(rec)
     db.flush()
     if was_latest:
@@ -712,7 +770,7 @@ def delete_assignment(agent_id: str, record_id: int, user = Depends(require_perm
         # ninguno), si no se queda con datos de un registro que ya no existe.
         a = db.query(Agent).filter(Agent.id == agent_id).first()
         new_latest = db.query(AssignmentLog).filter(AssignmentLog.agent_id == agent_id)\
-                        .order_by(desc(AssignmentLog.created_at)).first()
+                        .order_by(desc(AssignmentLog.assigned_at), desc(AssignmentLog.created_at)).first()
         if a:
             a.assigned_user    = new_latest.assigned_to if new_latest else None
             a.assigned_at      = new_latest.assigned_at if new_latest else None

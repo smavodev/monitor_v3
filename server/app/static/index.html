@@ -1538,37 +1538,33 @@ canvas.spark{width:100%;height:80px}
 <!-- Modal editar agente -->
 <!-- Modal historial de cambios de inventario -->
 <div class="modal-overlay" id="modal-change-history">
-  <div class="modal" style="max-width:560px">
+  <div class="modal" style="max-width:480px">
     <div class="modal-title-row">
-      <div class="modal-title">Historial de cambios</div>
+      <div class="modal-title" id="modal-change-history-title">Registrar cambio / mantenimiento</div>
       <button class="modal-close" onclick="closeModal('modal-change-history')" aria-label="Cerrar">✕</button>
     </div>
-    <div id="change-history-list" style="max-height:320px;overflow-y:auto"></div>
-    <div style="border-top:1px solid var(--border);margin-top:16px;padding-top:16px">
-      <div class="notif-subtitle" style="margin-top:0">Registrar cambio / mantenimiento</div>
-      <div class="form-grid">
-        <div class="form-group">
-          <label class="form-label">Tipo</label>
-          <select class="form-input" id="ch-field">
-            <option value="RAM">RAM</option>
-            <option value="Batería">Batería</option>
-            <option value="Fuente">Fuente de poder</option>
-            <option value="Disco">Disco</option>
-            <option value="Otro">Otro</option>
-          </select>
-        </div>
-        <div class="form-group">
-          <label class="form-label">Fecha del cambio</label>
-          <input class="form-input" id="ch-date" type="date">
-        </div>
+    <div class="form-grid">
+      <div class="form-group">
+        <label class="form-label">Tipo</label>
+        <select class="form-input" id="ch-field">
+          <option value="RAM">RAM</option>
+          <option value="Batería">Batería</option>
+          <option value="Fuente">Fuente de poder</option>
+          <option value="Disco">Disco</option>
+          <option value="Otro">Otro</option>
+        </select>
       </div>
       <div class="form-group">
-        <label class="form-label">Detalle</label>
-        <textarea class="form-input" id="ch-note" rows="2" style="resize:vertical" placeholder="Ej: se cambió RAM por falla, se reemplazó batería de la laptop, se cambió fuente de la PC..."></textarea>
+        <label class="form-label">Fecha del cambio</label>
+        <input class="form-input" id="ch-date" type="date">
       </div>
-      <div class="form-actions" style="margin-top:8px">
-        <button class="btn btn-primary btn-sm" onclick="saveAgentChange()">Registrar</button>
-      </div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Detalle</label>
+      <textarea class="form-input" id="ch-note" rows="2" style="resize:vertical" placeholder="Ej: se cambió RAM por falla, se reemplazó batería de la laptop, se cambió fuente de la PC..."></textarea>
+    </div>
+    <div class="form-actions" style="margin-top:8px">
+      <button class="btn btn-primary btn-sm" onclick="saveAgentChange()">Registrar</button>
     </div>
   </div>
 </div>
@@ -1607,6 +1603,15 @@ canvas.spark{width:100%;height:80px}
     <div id="asg-section-return">
       <div class="form-group"><label class="form-label">Fecha de devolución</label><input class="form-input" id="asg-returned-at" type="date"></div>
       <div class="form-group"><label class="form-label">Observaciones de devolución</label><textarea class="form-input" id="asg-return-notes" rows="2" style="resize:vertical" placeholder="Ej: devuelto por falla de batería, faltante de cargador…"></textarea></div>
+    </div>
+    <div id="asg-section-edit">
+      <div class="form-group"><label class="form-label">Asignado a</label>
+        <select class="form-input" id="asg-edit-user"><option value="">Sin asignar</option></select>
+      </div>
+      <div class="form-group"><label class="form-label">Fecha de asignación</label><input class="form-input" id="asg-edit-assigned-at" type="date"></div>
+      <div class="form-group"><label class="form-label">Observaciones de entrega</label><textarea class="form-input" id="asg-edit-delivery-notes" rows="2" style="resize:vertical"></textarea></div>
+      <div class="form-group"><label class="form-label">Fecha de devolución</label><input class="form-input" id="asg-edit-returned-at" type="date"></div>
+      <div class="form-group"><label class="form-label">Observaciones de devolución</label><textarea class="form-input" id="asg-edit-return-notes" rows="2" style="resize:vertical"></textarea></div>
     </div>
     <div class="modal-footer">
       <button class="btn btn-ghost" onclick="closeModal('modal-assignment')">Cancelar</button>
@@ -4156,6 +4161,7 @@ function deviceTypeIcon(t) {
 }
 const CHANGE_FIELD_LABEL = { RAM:'RAM', 'Batería':'Batería', Fuente:'Fuente de poder', Disco:'Disco', Otro:'Otro' };
 let _changeAgentId = null;
+let _changeEditRecordId = null; // id del registro en edición (null = registrando uno nuevo)
 
 // ── Configuración de tipos de dispositivo ───────────────────────────────────
 async function fetchDeviceTypes() {
@@ -4239,37 +4245,27 @@ async function setAgentDeviceType(id, val) {
   } catch (e) { alert(e.message || 'No se pudo guardar el tipo de dispositivo.'); }
 }
 
-async function openChangeHistory(id) {
+function openChangeHistory(id) {
   _changeAgentId = id;
+  _changeEditRecordId = null;
+  document.getElementById('modal-change-history-title').textContent = 'Registrar cambio / mantenimiento';
+  document.getElementById('ch-field').value = 'RAM';
   const d = document.getElementById('ch-date');
   if (d) d.value = new Date().toISOString().slice(0, 10);
   document.getElementById('ch-note').value = '';
-  await fetchAgentChanges();
   openModal('modal-change-history');
 }
 
-async function fetchAgentChanges() {
-  const el = document.getElementById('change-history-list');
-  if (!_changeAgentId) return;
-  const rows = await api(`/api/agents/${_changeAgentId}/changes`);
-  if (!rows || !rows.length) {
-    el.innerHTML = '<div style="color:var(--text-dim);font-size:13px;padding:12px 0">Sin cambios registrados.</div>';
-    return;
-  }
-  el.innerHTML = rows.map(r => {
-    const label = CHANGE_FIELD_LABEL[r.field] || r.field;
-    const date = r.change_date || (r.changed_at ? r.changed_at.slice(0, 10) : '');
-    const diff = (r.old_value || r.new_value)
-      ? `<div style="font-size:12px;color:var(--text-mid);margin-top:2px">${r.old_value || '—'} → ${r.new_value || '—'}</div>` : '';
-    const note = r.note ? `<div style="font-size:12px;color:var(--text-dim);margin-top:2px">${r.note}</div>` : '';
-    const by = r.changed_by ? `<div style="font-size:11px;color:var(--text-dim);margin-top:2px">por ${r.changed_by}</div>` : '';
-    return `<div style="padding:12px 0;border-bottom:1px solid var(--border)">
-      <div style="display:flex;justify-content:space-between;gap:8px">
-        <span style="font-weight:600;font-size:13px">${label}</span>
-        <span style="font-size:12px;color:var(--text-dim)">${date}</span>
-      </div>${diff}${note}${by}
-    </div>`;
-  }).join('');
+function openEditChangeModal(id, recordId) {
+  const rec = (_changeRowsCache[id] || []).find(r => r.id === recordId);
+  if (!rec) return;
+  _changeAgentId = id;
+  _changeEditRecordId = recordId;
+  document.getElementById('modal-change-history-title').textContent = 'Editar registro de cambio';
+  document.getElementById('ch-field').value = rec.field;
+  document.getElementById('ch-date').value  = rec.change_date || '';
+  document.getElementById('ch-note').value  = rec.note || '';
+  openModal('modal-change-history');
 }
 
 async function saveAgentChange() {
@@ -4282,9 +4278,12 @@ async function saveAgentChange() {
   }
   const body = { field, change_date, note };
   try {
-    await api(`/api/agents/${_changeAgentId}/changes`, {method:'POST', body: JSON.stringify(body)});
-    document.getElementById('ch-note').value = '';
-    await fetchAgentChanges();
+    if (_changeEditRecordId) {
+      await api(`/api/agents/${_changeAgentId}/changes/${_changeEditRecordId}`, {method:'PUT', body: JSON.stringify(body)});
+    } else {
+      await api(`/api/agents/${_changeAgentId}/changes`, {method:'POST', body: JSON.stringify(body)});
+    }
+    closeModal('modal-change-history');
     if (expandedAgentId === _changeAgentId && expandedPanel === 'changes') await renderAgentDetail(_changeAgentId, 'changes');
   } catch (e) { alert(e.message || 'No se pudo registrar el cambio.'); }
 }
@@ -4292,8 +4291,10 @@ async function saveAgentChange() {
 // ── Despliegue inline de historial / asignaciones por fila ─────────────────
 let expandedAgentId = null, expandedPanel = null;
 let _assignmentAgentId = null;
-let _assignmentMode = 'assign'; // 'assign' | 'return'
-let _assignmentRecordId = null; // id del registro abierto a devolver (solo en modo 'return')
+let _assignmentMode = 'assign'; // 'assign' | 'return' | 'edit'
+let _assignmentRecordId = null; // id del registro abierto a devolver/editar
+let _assignmentRowsCache = {}; // agentId -> registros de asignación tal como vinieron de la API
+let _changeRowsCache = {};     // agentId -> registros de historial de cambios
 
 function collapseAgentDetail() {
   if (expandedAgentId) {
@@ -4327,9 +4328,10 @@ async function renderAgentDetail(id, panel) {
     const list = document.getElementById('inv-changes-' + id);
     try {
       const rows = await api(`/api/agents/${id}/changes`);
+      _changeRowsCache[id] = rows || [];
       list.innerHTML = (rows && rows.length) ? `
         <table class="data-table" style="width:100%;font-size:13px">
-          <thead><tr><th>Componente</th><th>Fecha de cambio</th><th>Motivo</th></tr></thead>
+          <thead><tr><th>Componente</th><th>Fecha de cambio</th><th>Motivo</th><th></th></tr></thead>
           <tbody>
             ${rows.map(r => {
               const label = CHANGE_FIELD_LABEL[r.field] || r.field;
@@ -4342,6 +4344,7 @@ async function renderAgentDetail(id, panel) {
                 <td style="font-weight:600;white-space:nowrap">${label}</td>
                 <td style="color:var(--text-dim);white-space:nowrap">${date || '—'}</td>
                 <td>${diff}${note || (!diff ? '—' : '')}${by}</td>
+                <td style="text-align:right"><button class="btn btn-ghost btn-sm" title="Editar" onclick="openEditChangeModal('${id}',${r.id})">✎</button></td>
               </tr>`;
             }).join('')}
           </tbody>
@@ -4352,6 +4355,7 @@ async function renderAgentDetail(id, panel) {
     const list = document.getElementById('inv-assign-' + id);
     try {
       const rows = await api(`/api/agents/${id}/assignments`);
+      _assignmentRowsCache[id] = rows || [];
       const trs = (rows || []).map(r => {
         const name = r.assigned_to_name || (r.assigned_to ? 'ID ' + r.assigned_to : '—');
         const entrega = `${r.assigned_at || '—'}${r.delivery_notes ? `<div style="margin-top:2px">${r.delivery_notes}</div>` : ''}`;
@@ -4359,15 +4363,17 @@ async function renderAgentDetail(id, panel) {
           ? `${r.returned_at || '—'}${r.return_notes ? `<div style="margin-top:2px">${r.return_notes}</div>` : ''}`
           : '<span style="color:var(--text-dim)">—</span>';
         const by = r.changed_by ? `<div style="font-size:11px;color:var(--text-dim);margin-top:2px">por ${r.changed_by}</div>` : '';
+        const edit = `<button class="btn btn-ghost btn-sm" title="Editar" onclick="openEditAssignmentModal('${id}',${r.id})">✎</button>`;
         return `<tr>
           <td style="font-weight:600;white-space:nowrap">${name}${by}</td>
           <td style="white-space:nowrap">${entrega}</td>
           <td style="white-space:nowrap">${devolucion}</td>
+          <td style="text-align:right">${edit}</td>
         </tr>`;
       });
       list.innerHTML = trs.length ? (
         `<table class="data-table" style="width:100%;font-size:13px">
-          <thead><tr><th>Asignado a</th><th>Entrega</th><th>Devolución</th></tr></thead>
+          <thead><tr><th>Asignado a</th><th>Entrega</th><th>Devolución</th><th></th></tr></thead>
           <tbody>${trs.join('')}</tbody>
         </table>`
       ) : '<div style="text-align:center;padding:16px 10px;color:var(--text-dim);font-size:13px;border:1px dashed var(--border);border-radius:10px">📋 Sin asignaciones registradas para este equipo.</div>';
@@ -4377,22 +4383,33 @@ async function renderAgentDetail(id, panel) {
   }
 }
 
-function openAssignModal(id) {
+async function openAssignModal(id) {
   _assignmentAgentId = id;
   _assignmentMode = 'assign';
   _assignmentRecordId = null;
   document.getElementById('modal-assignment-title').textContent = 'Asignar equipo';
   document.getElementById('asg-section-assign').style.display = '';
   document.getElementById('asg-section-return').style.display = 'none';
+  document.getElementById('asg-section-edit').style.display = 'none';
   const au = document.getElementById('asg-user');
   if (au) {
     au.innerHTML = '<option value="">Sin asignar</option>' +
       (allUsers || []).map(u => `<option value="${u.id}">${u.name}</option>`).join('');
     au.value = '';
   }
-  document.getElementById('asg-assigned-at').value      = '';
+  const dateInput = document.getElementById('asg-assigned-at');
+  dateInput.value = '';
+  dateInput.min = '';
   document.getElementById('asg-assignment-notes').value = '';
   openModal('modal-assignment');
+  // No permitir elegir una fecha de asignación anterior a la devolución del
+  // registro más reciente — evita solapar con una asignación ya cerrada.
+  try {
+    const rows = await api(`/api/agents/${id}/assignments`);
+    _assignmentRowsCache[id] = rows || [];
+    const latest = (rows || [])[0];
+    if (latest && latest.returned_at) dateInput.min = latest.returned_at;
+  } catch {}
 }
 
 function openReturnModal(id, recordId) {
@@ -4402,8 +4419,30 @@ function openReturnModal(id, recordId) {
   document.getElementById('modal-assignment-title').textContent = 'Devolver equipo';
   document.getElementById('asg-section-assign').style.display = 'none';
   document.getElementById('asg-section-return').style.display = '';
+  document.getElementById('asg-section-edit').style.display = 'none';
   document.getElementById('asg-returned-at').value  = '';
   document.getElementById('asg-return-notes').value = '';
+  openModal('modal-assignment');
+}
+
+function openEditAssignmentModal(id, recordId) {
+  const rec = (_assignmentRowsCache[id] || []).find(r => r.id === recordId);
+  if (!rec) return;
+  _assignmentAgentId = id;
+  _assignmentMode = 'edit';
+  _assignmentRecordId = recordId;
+  document.getElementById('modal-assignment-title').textContent = 'Editar registro de asignación';
+  document.getElementById('asg-section-assign').style.display = 'none';
+  document.getElementById('asg-section-return').style.display = 'none';
+  document.getElementById('asg-section-edit').style.display = '';
+  const au = document.getElementById('asg-edit-user');
+  au.innerHTML = '<option value="">Sin asignar</option>' +
+    (allUsers || []).map(u => `<option value="${u.id}">${u.name}</option>`).join('');
+  au.value = rec.assigned_to || '';
+  document.getElementById('asg-edit-assigned-at').value    = rec.assigned_at || '';
+  document.getElementById('asg-edit-delivery-notes').value = rec.delivery_notes || '';
+  document.getElementById('asg-edit-returned-at').value    = rec.returned_at || '';
+  document.getElementById('asg-edit-return-notes').value   = rec.return_notes || '';
   openModal('modal-assignment');
 }
 
@@ -4415,6 +4454,14 @@ async function saveAssignment() {
       await api(`/api/agents/${id}/assignments/${_assignmentRecordId}`, {method:'PUT', body: {
         returned_at:  document.getElementById('asg-returned-at').value || null,
         return_notes: document.getElementById('asg-return-notes').value,
+      }});
+    } else if (_assignmentMode === 'edit' && _assignmentRecordId) {
+      await api(`/api/agents/${id}/assignments/${_assignmentRecordId}`, {method:'PUT', body: {
+        assigned_to:     document.getElementById('asg-edit-user').value || null,
+        assigned_at:     document.getElementById('asg-edit-assigned-at').value || null,
+        delivery_notes:  document.getElementById('asg-edit-delivery-notes').value,
+        returned_at:     document.getElementById('asg-edit-returned-at').value || null,
+        return_notes:    document.getElementById('asg-edit-return-notes').value,
       }});
     } else {
       await api(`/api/agents/${id}/assignments`, {method:'POST', body: {
