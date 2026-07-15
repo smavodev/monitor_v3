@@ -687,19 +687,19 @@ canvas.spark{width:100%;height:80px}
         <div style="display:grid;grid-template-columns:1fr 1fr 1fr auto auto auto auto;gap:10px;align-items:flex-end">
           <div>
             <label class="form-label" style="margin-bottom:4px">Equipo</label>
-            <select class="form-input" id="ev-filter-agent" style="font-size:13px">
+            <select class="form-input" id="ev-filter-agent" style="font-size:13px" onchange="fetchGlobalEvents()">
               <option value="">Todos los equipos</option>
             </select>
           </div>
           <div>
             <label class="form-label" style="margin-bottom:4px">Área</label>
-            <select class="form-input" id="ev-filter-sede" style="font-size:13px">
+            <select class="form-input" id="ev-filter-sede" style="font-size:13px" onchange="fetchGlobalEvents()">
               <option value="">Todas las áreas</option>
             </select>
           </div>
           <div>
             <label class="form-label" style="margin-bottom:4px">Tipo de evento</label>
-            <select class="form-input" id="ev-filter-type" style="font-size:13px">
+            <select class="form-input" id="ev-filter-type" style="font-size:13px" onchange="fetchGlobalEvents()">
               <option value="">Todos</option>
               <option value="offline">Sin conexión</option>
               <option value="online">Reconectado</option>
@@ -712,7 +712,7 @@ canvas.spark{width:100%;height:80px}
           <div>
             <label class="form-label" style="margin-bottom:4px">Desde</label>
             <div style="position:relative">
-              <input class="form-input" id="ev-filter-from" type="date" style="font-size:13px;padding-right:36px;cursor:pointer" onclick="this.showPicker&&this.showPicker()">
+              <input class="form-input" id="ev-filter-from" type="date" style="font-size:13px;padding-right:36px;cursor:pointer" onclick="this.showPicker&&this.showPicker()" onchange="fetchGlobalEvents()">
               <span onclick="document.getElementById('ev-filter-from').showPicker&&document.getElementById('ev-filter-from').showPicker()" style="position:absolute;right:10px;top:50%;transform:translateY(-50%);cursor:pointer;color:var(--text-dim);pointer-events:all">
                 <svg viewBox="0 0 24 24" fill="currentColor" width="15" height="15"><path d="M19 3h-1V1h-2v2H8V1H6v2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H5V8h14v11zM7 10h5v5H7z"/></svg>
               </span>
@@ -721,7 +721,7 @@ canvas.spark{width:100%;height:80px}
           <div>
             <label class="form-label" style="margin-bottom:4px">Hasta</label>
             <div style="position:relative">
-              <input class="form-input" id="ev-filter-to" type="date" style="font-size:13px;padding-right:36px;cursor:pointer" onclick="this.showPicker&&this.showPicker()">
+              <input class="form-input" id="ev-filter-to" type="date" style="font-size:13px;padding-right:36px;cursor:pointer" onclick="this.showPicker&&this.showPicker()" onchange="fetchGlobalEvents()">
               <span onclick="document.getElementById('ev-filter-to').showPicker&&document.getElementById('ev-filter-to').showPicker()" style="position:absolute;right:10px;top:50%;transform:translateY(-50%);cursor:pointer;color:var(--text-dim);pointer-events:all">
                 <svg viewBox="0 0 24 24" fill="currentColor" width="15" height="15"><path d="M19 3h-1V1h-2v2H8V1H6v2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H5V8h14v11zM7 10h5v5H7z"/></svg>
               </span>
@@ -729,7 +729,7 @@ canvas.spark{width:100%;height:80px}
           </div>
           <div>
             <label class="form-label" style="margin-bottom:4px">Mostrar</label>
-            <select class="form-input" id="ev-filter-limit" style="font-size:13px">
+            <select class="form-input" id="ev-filter-limit" style="font-size:13px" onchange="fetchGlobalEvents()">
               <option value="100">100</option>
               <option value="250">250</option>
               <option value="500" selected>500</option>
@@ -738,7 +738,6 @@ canvas.spark{width:100%;height:80px}
             </select>
           </div>
           <div style="display:flex;gap:6px;align-items:flex-end">
-            <button class="btn btn-primary btn-sm" style="height:38px" onclick="fetchGlobalEvents()">Filtrar</button>
             <button class="btn btn-ghost btn-sm" style="height:38px" onclick="clearEventsFilter()">Limpiar</button>
           </div>
         </div>
