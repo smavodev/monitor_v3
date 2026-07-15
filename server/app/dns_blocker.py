@@ -21,7 +21,6 @@ propio.
 
 import os
 import socket
-import ssl
 import time
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -39,8 +38,14 @@ import tls_ca
 
 
 UPSTREAM_DNS = os.getenv("DNS_UPSTREAM", "1.1.1.1")
-STATE_REFRESH_SEC = 15   # qué tan seguido se releen agentes/blocklist de la DB
+STATE_REFRESH_SEC = 5    # qué tan seguido se releen agentes/blocklist de la DB
 ATTEMPT_FLUSH_SEC = 10   # qué tan seguido se vuelcan los intentos acumulados
+# Tope de TTL para las respuestas reenviadas (NO bloqueadas). El TTL real que
+# trae el upstream puede ser de varios minutos — si un dominio se dejó pasar
+# por una excepción y esa excepción se quita después, el cliente sigue
+# usando esa IP cacheada hasta que ese TTL expire solo, tardando lo mismo en
+# reflejar el cambio. Con este tope, nunca tarda más de esto en notarlo.
+MAX_FORWARDED_TTL = 30
 
 # Puertos de la página de bloqueo, configurables: en despliegues donde el 443
 # público lo atiende un proxy propio (ej. para enrutar por dominio hacia el
@@ -247,7 +252,11 @@ class BlockResolver(BaseResolver):
             sock.sendto(request.pack(), (UPSTREAM_DNS, 53))
             data, _ = sock.recvfrom(4096)
             sock.close()
-            return DNSRecord.parse(data)
+            reply = DNSRecord.parse(data)
+            for rr in reply.rr:
+                if rr.ttl > MAX_FORWARDED_TTL:
+                    rr.ttl = MAX_FORWARDED_TTL
+            return reply
         except Exception:
             return request.reply()
 

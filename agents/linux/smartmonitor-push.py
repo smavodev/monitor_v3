@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
 """SmartMonitor v3 - Agente Linux (push de métricas reales)"""
 import sys; sys.dont_write_bytecode = True
-import subprocess, json, re, os, time, urllib.request, urllib.parse, hashlib, threading, socket
+import subprocess, json, re, os, time, urllib.request, urllib.parse, hashlib
 
 SERVER    = "http://172.27.142.107:8000"   # ← IP del servidor SmartMonitor
 HOSTNAME  = os.uname().nodename           # ← auto-detecta el hostname del equipo
 AGENT_DIR = os.path.dirname(os.path.abspath(__file__))  # ← carpeta donde vive este .py
 SW_HASH_CACHE = f"{AGENT_DIR}/.sw_hash"
+
+# IP unica del equipo dentro del tunel WireGuard (Headscale), si esta
+# conectado. None hasta que setup_wireguard_tunnel() lo resuelva. Se manda en
+# cada send_once() para que dns_blocker.py identifique a este equipo sin
+# depender de la IP publica compartida de la oficina.
+tailnet_ip = None
+tailnet_server_ip = None
 
 def get_wifi_ssid():
     """SSID de la red WiFi actual, o None si está por cable / sin WiFi detectable."""
@@ -55,8 +62,65 @@ CENTRAL_DNS_MARKER = "# SmartMonitor CENTRAL DNS"
 DOH_IPS = ["1.1.1.1", "1.0.0.1", "8.8.8.8", "8.8.4.4", "9.9.9.9", "149.112.112.112"]
 
 def _server_dns_ip():
+    # Si el tunel WireGuard esta activo, el DNS se apunta a la IP del server
+    # DENTRO del tunel (unica de verdad) en vez de la IP publica compartida
+    # de la oficina - asi dns_blocker.py identifica a este equipo sin
+    # ambiguedad. Si el tunel no esta disponible, se cae al comportamiento
+    # de siempre (IP publica) sin que el bloqueo deje de funcionar.
+    if tailnet_ip and tailnet_server_ip:
+        return tailnet_server_ip
     m = re.search(r"https?://([^:/]+)", SERVER)
     return m.group(1) if m else SERVER
+
+def get_tailscale_ip():
+    try:
+        if not sh("command -v tailscale"):
+            return None
+        out = sh("tailscale ip -4").strip()
+        return out or None
+    except Exception:
+        return None
+
+def setup_wireguard_tunnel():
+    """Registra este equipo en el tunel WireGuard (Headscale) si todavia no
+    lo esta. No es indispensable para que el agente funcione: si esto falla
+    o tailscale no esta instalado, el bloqueo sigue funcionando igual que
+    siempre por la IP publica (ver _server_dns_ip)."""
+    global tailnet_ip, tailnet_server_ip
+    try:
+        if not sh("command -v tailscale"):
+            return
+        existing_ip = get_tailscale_ip()
+        if existing_ip:
+            tailnet_ip = existing_ip
+            if not tailnet_server_ip:
+                try:
+                    body = json.dumps({"hostname": HOSTNAME}).encode()
+                    req = urllib.request.Request(
+                        f"{SERVER}/api/agents/wireguard/preauthkey",
+                        data=body, headers={"Content-Type": "application/json"}, method="POST")
+                    reg = json.loads(urllib.request.urlopen(req, timeout=10).read())
+                    tailnet_server_ip = reg.get("server_tailnet_ip")
+                except Exception:
+                    pass
+            return
+        print("WireGuard: sin conectar, pidiendo pre-auth key al servidor...")
+        body = json.dumps({"hostname": HOSTNAME}).encode()
+        req = urllib.request.Request(
+            f"{SERVER}/api/agents/wireguard/preauthkey",
+            data=body, headers={"Content-Type": "application/json"}, method="POST")
+        reg = json.loads(urllib.request.urlopen(req, timeout=10).read())
+        tailnet_server_ip = reg.get("server_tailnet_ip")
+        sh(f"tailscale up --login-server={reg['login_server']} --authkey={reg['authkey']} "
+           f"--hostname={HOSTNAME} --accept-dns=false --reset --timeout=30s")
+        time.sleep(3)
+        tailnet_ip = get_tailscale_ip()
+        if tailnet_ip:
+            print(f"WireGuard: conectado, IP={tailnet_ip} (server={tailnet_server_ip})")
+        else:
+            print("WARN: WireGuard no conecto (reintenta solo)")
+    except Exception as e:
+        print(f"WARN: no se pudo configurar WireGuard: {e}")
 
 def _nm_active_connections():
     """Nombres de las conexiones activas de NetworkManager (una por interfaz
@@ -443,6 +507,7 @@ def send_once():
         "top_processes":      procs,
         "installed_software": installed_software,
         "device_type":        hw.get("device_type", ""),
+        "tailnet_ip":         tailnet_ip,
     }
     data = json.dumps(payload).encode()
     req  = urllib.request.Request(
@@ -468,8 +533,13 @@ print(f"Servidor configurado: {SERVER} | Hostname: {HOSTNAME}")
 disable_browser_doh_linux()
 block_doh_endpoints_linux()
 
+# Intento inicial de conectar el tunel WireGuard (no bloqueante: si falla,
+# el agente sigue funcionando por IP publica igual que siempre)
+setup_wireguard_tunnel()
+
 interval = get_interval()
 last_metrics = 0.0
+last_wireguard_retry = time.time()
 while True:
     try:
         now_t = time.time()
@@ -477,6 +547,12 @@ while True:
             send_once()
             interval = get_interval()
             last_metrics = time.time()
+        # Reintenta conectar el tunel WireGuard cada ~60s si todavia no lo
+        # logro (ej. tailscaled tardo en arrancar, o el server no tenia
+        # Headscale configurado en ese momento).
+        if not tailnet_ip and time.time() - last_wireguard_retry >= 60:
+            setup_wireguard_tunnel()
+            last_wireguard_retry = time.time()
         should_block, all_domains = get_blocklist()
         if should_block is not None:
             all_domains = all_domains or []

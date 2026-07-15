@@ -23,6 +23,11 @@ HEADSCALE_URL        = os.getenv("HEADSCALE_URL", "http://127.0.0.1:8090")
 HEADSCALE_PUBLIC_URL = os.getenv("HEADSCALE_PUBLIC_URL", HEADSCALE_URL)
 HEADSCALE_API_KEY    = os.getenv("HEADSCALE_API_KEY", "")
 HEADSCALE_USER_ID    = os.getenv("HEADSCALE_USER_ID", "1")
+# IP del propio servidor SmartMonitor dentro del tunel (el primer nodo
+# registrado en Headscale) - es a donde cada agente debe apuntar su DNS
+# cuando esta conectado. Fija por env var: es estable mientras no se borre
+# y re-registre ese nodo desde cero en Headscale.
+HEADSCALE_SERVER_TAILNET_IP = os.getenv("HEADSCALE_SERVER_TAILNET_IP", "")
 
 
 @router.post("/preauthkey")
@@ -65,4 +70,5 @@ def create_preauthkey(data: dict):
     return {
         "login_server": HEADSCALE_PUBLIC_URL,
         "authkey": resp["preAuthKey"]["key"],
+        "server_tailnet_ip": HEADSCALE_SERVER_TAILNET_IP,
     }
