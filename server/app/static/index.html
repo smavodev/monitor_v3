@@ -611,7 +611,7 @@ canvas.spark{width:100%;height:80px}
           </div>
           <div>
             <label class="form-label" style="margin-bottom:4px">Usuario</label>
-            <select class="form-input" id="inv-filter-user" style="font-size:13px" onchange="applyInventoryFilter()">
+            <select class="form-input" id="inv-filter-user" style="font-size:13px" onchange="onInventoryUserFilterChange()">
               <option value="">Todos</option>
             </select>
           </div>
@@ -619,10 +619,7 @@ canvas.spark{width:100%;height:80px}
             <button class="btn btn-ghost btn-sm" style="height:38px" onclick="clearInventoryFilter()">Limpiar</button>
           </div>
         </div>
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">
-          <div id="inv-results-info" style="font-size:12px;color:var(--text-dim)"></div>
-          <button class="btn btn-ghost btn-sm" id="inv-filter-user-history" style="display:none" onclick="openUserEquipmentModal(document.getElementById('inv-filter-user').value, encodeURIComponent(document.getElementById('inv-filter-user').selectedOptions[0].textContent))">Ver historial completo (incluye equipos anteriores)</button>
-        </div>
+        <div id="inv-results-info" style="font-size:12px;color:var(--text-dim);margin-top:8px"></div>
       </div>
       <!-- Barra de acciones: siempre visible, los botones se deshabilitan sin selección -->
       <div id="inv-selection-bar" class="card" style="display:flex;margin-bottom:12px;padding:10px 18px;align-items:center;gap:12px;flex-wrap:wrap">
@@ -1637,16 +1634,6 @@ canvas.spark{width:100%;height:80px}
   </div>
 </div>
 
-<div class="modal-overlay" id="modal-user-equipment">
-  <div class="modal" style="max-width:560px">
-    <div class="modal-title-row">
-      <div class="modal-title" id="modal-user-equipment-title">Equipos</div>
-      <button class="modal-close" onclick="closeModal('modal-user-equipment')" aria-label="Cerrar">✕</button>
-    </div>
-    <div id="user-equipment-list" style="max-height:400px;overflow-y:auto"></div>
-  </div>
-</div>
-
 <div class="modal-overlay" id="modal-review-status">
   <div class="modal" style="max-width:420px">
     <div class="modal-title">Estado del equipo</div>
@@ -1761,6 +1748,7 @@ let allAgents = [];
 let currentAgentId = null;
 let selectedAgentIds = new Set();
 let _lastInventorySig = null;
+let _invFilterUserAssignments = null; // Map agent_id -> registro de asignación, del usuario filtrado en Inventario (null = sin filtro de usuario)
 let areas = [];
 let allUsers = [];
 let evtSource = null;
@@ -2441,16 +2429,15 @@ function renderInventory() {
   const tipo = document.getElementById('inv-filter-type')?.value || '';
   const status = document.getElementById('inv-filter-status')?.value || '';
   const userId = document.getElementById('inv-filter-user')?.value || '';
-  const historyBtn = document.getElementById('inv-filter-user-history');
-  if (historyBtn) historyBtn.style.display = userId ? '' : 'none';
   const filtered = allAgents.filter(a => {
     if (q && !((a.display_name || a.hostname || '').toLowerCase().includes(q))) return false;
     if (sede && (a.sede_id || '') !== sede) return false;
     if (tipo && (a.device_type || '') !== tipo) return false;
     if (status && (a.status || '') !== status) return false;
-    // Solo la asignación vigente (sin devolución) cuenta como "lo tiene ahora";
-    // para ver lo que tuvo en el pasado está el link de historial completo.
-    if (userId && !(a.assigned_user === userId && !a.returned_at)) return false;
+    // Al filtrar por usuario se muestran TODOS sus equipos, actuales y
+    // anteriores (_invFilterUserAssignments trae el historial completo de esa
+    // persona) — no solo la asignación vigente.
+    if (userId && (!_invFilterUserAssignments || !_invFilterUserAssignments.has(a.id))) return false;
     return true;
   });
 
@@ -2473,7 +2460,8 @@ function renderInventory() {
     a.serial_number, a.os, a.cpu_model, a.cpu_cores, a.ram_total_gb, a.cpu_percent, a.ram_percent,
     a.disk_percent, a.cpu_temp, a.sede, a.device_type, a.status,
     a.assigned_user_name, a.returned_at, a.review_status, a.purchase_date, a.invoice_number]))
-    + '|' + [...selectedAgentIds].sort().join(',');
+    + '|' + [...selectedAgentIds].sort().join(',')
+    + '|' + userId + ':' + (_invFilterUserAssignments ? [..._invFilterUserAssignments.entries()].map(([k,v])=>k+','+v.assigned_at+','+v.returned_at).sort().join(';') : '');
   if (sig === _lastInventorySig) {
     updateInventorySelectionBar();
     return;
@@ -2485,7 +2473,13 @@ function renderInventory() {
     <td style="text-align:center" onclick="event.stopPropagation()">
       <input type="checkbox" data-id="${a.id}" onchange="toggleAgentSelect('${a.id}', this.checked)" ${selectedAgentIds.has(a.id) ? 'checked' : ''}>
     </td>
-    <td>${a.assigned_user_name || '--'}</td>
+    <td>${a.assigned_user_name || '--'}${(() => {
+      if (!_invFilterUserAssignments) return '';
+      const rec = _invFilterUserAssignments.get(a.id);
+      if (!rec) return '';
+      const range = rec.returned_at ? `${rec.assigned_at||'—'} – ${rec.returned_at}` : `desde ${rec.assigned_at||'—'} (vigente)`;
+      return `<div style="font-size:11px;color:var(--text-dim);margin-top:2px">${range}</div>`;
+    })()}</td>
     <td onclick="event.stopPropagation()">${(() => { const rs = reviewStatusInfo(a); return `<span class="badge ${rs.cls} clickable" title="Cambiar estado" onclick="openReviewStatusModal('${a.id}')">${rs.label}</span>`; })()}</td>
     <td style="white-space:nowrap">${a.purchase_date || '--'}</td>
     <td style="white-space:nowrap">${a.invoice_number || '--'}</td>
@@ -2624,9 +2618,30 @@ function inventoryToolbarAction(kind) {
 
 function applyInventoryFilter() { renderInventory(); }
 
+async function onInventoryUserFilterChange() {
+  const userId = document.getElementById('inv-filter-user')?.value || '';
+  if (!userId) {
+    _invFilterUserAssignments = null;
+    renderInventory();
+    return;
+  }
+  // Mientras carga, vaciar (no dejar los resultados del usuario anterior).
+  _invFilterUserAssignments = new Map();
+  renderInventory();
+  try {
+    const rows = await api(`/api/agents/by-user/${userId}/assignments`);
+    if (document.getElementById('inv-filter-user')?.value !== userId) return; // cambió mientras esperábamos
+    const map = new Map();
+    (rows || []).forEach(r => { if (r.agent_id && !map.has(r.agent_id)) map.set(r.agent_id, r); });
+    _invFilterUserAssignments = map;
+    renderInventory();
+  } catch (e) { /* deja el resultado vacío */ }
+}
+
 function clearInventoryFilter() {
   const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
   set('inv-filter-search', ''); set('inv-filter-sede', ''); set('inv-filter-type', ''); set('inv-filter-status', ''); set('inv-filter-user', '');
+  _invFilterUserAssignments = null;
   renderInventory();
 }
 
@@ -3060,37 +3075,6 @@ function userActions(u) {
   const tog = `<button class="btn btn-xs ${u.active?'btn-ghost':'btn-primary'}" onclick="toggleUserActive('${u.id}','${encodeURIComponent(u.name)}',${u.active})">${u.active?'Desactivar':'Activar'}</button>`;
   const del = `<button class="btn btn-xs btn-danger" onclick="deleteUser('${u.id}')">Eliminar</button>`;
   return edit + reset + tog + del;
-}
-
-async function openUserEquipmentModal(userId, nameEnc) {
-  const name = decodeURIComponent(nameEnc);
-  document.getElementById('modal-user-equipment-title').textContent = `Equipos de ${name}`;
-  const list = document.getElementById('user-equipment-list');
-  list.innerHTML = 'Cargando…';
-  openModal('modal-user-equipment');
-  try {
-    const rows = await api(`/api/agents/by-user/${userId}/assignments`);
-    list.innerHTML = (rows && rows.length) ? `
-      <table class="data-table" style="width:100%;font-size:13px">
-        <thead><tr><th>Equipo</th><th>Entrega</th><th>Devolución</th></tr></thead>
-        <tbody>
-          ${rows.map(r => {
-            const equipo = r.agent_id
-              ? `<a href="#" onclick="closeModal('modal-user-equipment');showView('inventory');document.getElementById('inv-filter-search').value='${(r.hostname||'').replace(/'/g,"\\'")}';applyInventoryFilter();return false;">${r.display_name}</a>`
-              : r.display_name;
-            const entrega = `${r.assigned_at || '—'}${r.delivery_notes ? `<div style="margin-top:2px">${r.delivery_notes}</div>` : ''}`;
-            const devolucion = (r.returned_at || r.return_notes)
-              ? `${r.returned_at || '—'}${r.return_notes ? `<div style="margin-top:2px">${r.return_notes}</div>` : ''}`
-              : '<span style="color:var(--text-dim)">Lo tiene actualmente</span>';
-            return `<tr>
-              <td style="font-weight:600;white-space:nowrap">${equipo}</td>
-              <td style="white-space:nowrap">${entrega}</td>
-              <td style="white-space:nowrap">${devolucion}</td>
-            </tr>`;
-          }).join('')}
-        </tbody>
-      </table>` : '<div style="text-align:center;padding:16px 10px;color:var(--text-dim);font-size:13px;border:1px dashed var(--border);border-radius:10px">Sin equipos asignados, actuales ni pasados.</div>';
-  } catch (e) { list.innerHTML = '<div style="color:var(--red)">' + (e.message || 'Error') + '</div>'; }
 }
 
 async function fetchUsers() {
