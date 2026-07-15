@@ -67,7 +67,13 @@ REM Inyectar la IP/dominio del servidor en el script copiado (igual que el
 REM instalador de Linux hace con sed): reemplazo literal de la IP por defecto
 REM en todas sus apariciones (linea de $SERVER y la de espera de red), asi
 REM se evita lidiar con comillas anidadas entre cmd y PowerShell.
-powershell -ExecutionPolicy Bypass -Command "(Get-Content -Raw '%PS_DEST%').Replace('172.27.142.107', '%SERVER_IP%') | Set-Content -Path '%PS_DEST%' -Encoding UTF8"
+REM OJO: el placeholder tiene que ser el que el .ps1 fuente trae hardcodeado
+REM ahora mismo (52.73.185.45) — si queda desactualizado (como paso con la
+REM IP vieja 172.27.142.107, que ya no aparecia en el archivo), este
+REM reemplazo no encuentra nada y el mensaje "[OK] Servidor configurado"
+REM miente: el .ps1 se queda con el server hardcodeado sin importar que
+REM SERVER_IP se le pase al instalador.
+powershell -ExecutionPolicy Bypass -Command "(Get-Content -Raw '%PS_DEST%').Replace('52.73.185.45', '%SERVER_IP%') | Set-Content -Path '%PS_DEST%' -Encoding UTF8"
 echo [OK] Servidor configurado: http://%SERVER_IP%:8000
 
 REM Ocultar carpeta
