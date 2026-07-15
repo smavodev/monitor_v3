@@ -4342,7 +4342,10 @@ async function renderAgentDetail(id, panel) {
   const el = document.getElementById('inv-detail-content-' + id);
   if (!el) return;
   if (panel === 'changes') {
-    el.innerHTML = '<div style="font-weight:600;margin-bottom:8px">Historial de cambios</div><div id="inv-changes-' + id + '">Cargando…</div>';
+    el.innerHTML = '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">' +
+      '<div style="font-weight:600">Historial de cambios</div>' +
+      '<button class="btn btn-primary btn-sm" title="Registrar cambio / mantenimiento" onclick="openChangeHistory(\'' + id + '\')">+ Registrar cambio</button>' +
+      '</div><div id="inv-changes-' + id + '">Cargando…</div>';
     const list = document.getElementById('inv-changes-' + id);
     try {
       const rows = await api(`/api/agents/${id}/changes`);
@@ -4366,8 +4369,6 @@ async function renderAgentDetail(id, panel) {
           </tbody>
         </table>` : '<div style="color:var(--text-dim);font-size:13px">Sin cambios registrados.</div>';
     } catch (e) { list.innerHTML = '<div style="color:var(--red)">' + (e.message || 'Error') + '</div>'; }
-    el.insertAdjacentHTML('beforeend',
-      '<div style="margin-top:10px"><button class="btn btn-primary btn-sm" onclick="openChangeHistory(\'' + id + '\')">Registrar cambio / mantenimiento</button></div>');
   } else {
     el.innerHTML = '<div style="font-weight:600;margin-bottom:8px">Historial de asignaciones</div><div id="inv-assign-' + id + '">Cargando…</div>';
     const list = document.getElementById('inv-assign-' + id);
