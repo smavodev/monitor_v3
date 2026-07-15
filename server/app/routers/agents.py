@@ -658,12 +658,67 @@ def add_assignment(agent_id: str, data: dict, user = Depends(require_permission(
     db.commit()
     return {"ok": True}
 
+@router.put("/{agent_id}/assignments/{record_id}")
+def update_assignment(agent_id: str, record_id: int, data: dict, user = Depends(require_permission("inventory", "edit")), db: Session = Depends(get_db)):
+    """Actualiza un registro de asignación existente — se usa principalmente
+    para 'Devolver' un equipo: agrega fecha/observaciones de devolución a la
+    asignación ya abierta en vez de crear un registro nuevo y desconectado."""
+    a = db.query(Agent).filter(Agent.id == agent_id).first()
+    if not a:
+        raise HTTPException(404, "Agente no encontrado")
+    rec = db.query(AssignmentLog).filter(AssignmentLog.id == record_id, AssignmentLog.agent_id == agent_id).first()
+    if not rec:
+        raise HTTPException(404, "Registro no encontrado")
+
+    if "assigned_to" in data or "assigned_to_name" in data:
+        assigned_to = data.get("assigned_to") or None
+        name = data.get("assigned_to_name")
+        if not name and assigned_to:
+            u = db.query(User).filter(User.id == assigned_to).first()
+            name = u.name if u else None
+        rec.assigned_to = assigned_to
+        rec.assigned_to_name = name
+    if "assigned_at" in data:    rec.assigned_at = _parse_date(data.get("assigned_at"))
+    if "delivery_notes" in data: rec.delivery_notes = data.get("delivery_notes") or None
+    if "returned_at" in data:    rec.returned_at = _parse_date(data.get("returned_at"))
+    if "return_notes" in data:   rec.return_notes = data.get("return_notes") or None
+    rec.changed_by = (user.name or user.email if user else None)
+
+    # Si es el registro de asignación más reciente, reflejar los cambios
+    # también en el agente (igual que hace el POST al crear uno nuevo).
+    latest = db.query(AssignmentLog).filter(AssignmentLog.agent_id == agent_id)\
+                .order_by(desc(AssignmentLog.created_at)).first()
+    if latest and latest.id == rec.id:
+        a.assigned_user    = rec.assigned_to
+        a.assigned_at       = rec.assigned_at
+        a.assignment_notes = rec.delivery_notes
+        a.returned_at      = rec.returned_at
+        a.return_notes     = rec.return_notes
+    db.commit()
+    return {"ok": True}
+
 @router.delete("/{agent_id}/assignments/{record_id}")
 def delete_assignment(agent_id: str, record_id: int, user = Depends(require_permission("inventory", "edit")), db: Session = Depends(get_db)):
     rec = db.query(AssignmentLog).filter(AssignmentLog.id == record_id, AssignmentLog.agent_id == agent_id).first()
     if not rec:
         raise HTTPException(404, "Registro no encontrado")
+    was_latest = db.query(AssignmentLog).filter(AssignmentLog.agent_id == agent_id)\
+                    .order_by(desc(AssignmentLog.created_at)).first().id == rec.id
     db.delete(rec)
+    db.flush()
+    if was_latest:
+        # El resumen "asignado a" del equipo reflejaba este registro — hay que
+        # recalcularlo con el que quede más reciente (o limpiarlo si no queda
+        # ninguno), si no se queda con datos de un registro que ya no existe.
+        a = db.query(Agent).filter(Agent.id == agent_id).first()
+        new_latest = db.query(AssignmentLog).filter(AssignmentLog.agent_id == agent_id)\
+                        .order_by(desc(AssignmentLog.created_at)).first()
+        if a:
+            a.assigned_user    = new_latest.assigned_to if new_latest else None
+            a.assigned_at      = new_latest.assigned_at if new_latest else None
+            a.assignment_notes = new_latest.delivery_notes if new_latest else None
+            a.returned_at      = new_latest.returned_at if new_latest else None
+            a.return_notes     = new_latest.return_notes if new_latest else None
     db.commit()
     return {"ok": True}
 

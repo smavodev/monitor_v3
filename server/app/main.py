@@ -41,6 +41,7 @@ def startup():
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version INTEGER DEFAULT 0",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS password_changed_at TIMESTAMP DEFAULT NOW()",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS role_id VARCHAR",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS has_access BOOLEAN DEFAULT TRUE",
         "ALTER TABLE agents ADD COLUMN IF NOT EXISTS device_type VARCHAR",
         "ALTER TABLE agents ADD COLUMN IF NOT EXISTS device_type_manual BOOLEAN DEFAULT FALSE",
         "ALTER TABLE agents ADD COLUMN IF NOT EXISTS display_name_manual BOOLEAN DEFAULT FALSE",
@@ -49,6 +50,11 @@ def startup():
         "ALTER TABLE agents ADD COLUMN IF NOT EXISTS returned_at DATE",
         "ALTER TABLE agents ADD COLUMN IF NOT EXISTS assignment_notes TEXT",
         "ALTER TABLE agents ADD COLUMN IF NOT EXISTS return_notes TEXT",
+        # Antes no tenía ON DELETE SET NULL: borrar un usuario que seguía
+        # asignado a algún equipo tumbaba con 500 (ForeignKeyViolation) en vez
+        # de simplemente desasignarlo.
+        "ALTER TABLE agents DROP CONSTRAINT IF EXISTS agents_assigned_user_fkey",
+        "ALTER TABLE agents ADD CONSTRAINT agents_assigned_user_fkey FOREIGN KEY (assigned_user) REFERENCES users(id) ON DELETE SET NULL",
         # Red de seguridad: create_all ya debería crear esta tabla, pero si no
         # existiera (código viejo) la creamos para no abortar la migración.
         """CREATE TABLE IF NOT EXISTS agent_change_log (

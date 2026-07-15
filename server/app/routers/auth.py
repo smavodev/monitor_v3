@@ -120,18 +120,24 @@ def _fmt_user(db: Session, u: User) -> dict:
         "id": u.id, "name": u.name, "email": u.email,
         "role_id": u.role_id, "role_name": role.name if role else "Sin rol",
         "active": u.active,
+        "has_access": bool(u.has_access) if u.has_access is not None else True,
         "must_change_password": bool(u.must_change_password),
     }
 
 
 def _remaining_users_with_permission(db: Session, section: str, min_level: str, exclude_id: str) -> int:
-    """Cuántos usuarios activos (sin contar exclude_id) seguirían teniendo al
-    menos min_level en section. La regla es sobre el sistema (siempre debe
-    quedar alguien que pueda gestionar usuarios/roles), no sobre la
-    identidad de quién hace el cambio — así que un usuario sí puede
-    desactivarse/eliminarse a sí mismo (o a otro), mientras quede alguien
-    más con ese mismo nivel de acceso."""
-    users = db.query(User).filter(User.active == True, User.id != exclude_id, User.role_id.isnot(None)).all()
+    """Cuántos usuarios activos y con acceso a la consola (sin contar
+    exclude_id) seguirían teniendo al menos min_level en section. La regla es
+    sobre el sistema (siempre debe quedar alguien que pueda gestionar
+    usuarios/roles), no sobre la identidad de quién hace el cambio — así que
+    un usuario sí puede desactivarse/eliminarse a sí mismo (o a otro),
+    mientras quede alguien más con ese mismo nivel de acceso. Un usuario sin
+    acceso a la consola (has_access=False) no cuenta aunque tenga un rol con
+    permisos, porque no puede iniciar sesión para ejercerlos."""
+    users = db.query(User).filter(
+        User.active == True, User.has_access == True,
+        User.id != exclude_id, User.role_id.isnot(None),
+    ).all()
     return sum(1 for u in users if has_permission(db, u, section, min_level))
 
 
@@ -144,6 +150,7 @@ class UserCreate(BaseModel):
     name: str
     email: str
     role_id: str
+    has_access: bool = True
     # password is optional — if omitted, a temp password is auto-generated
     password: str | None = None
 
@@ -153,6 +160,7 @@ class UserUpdate(BaseModel):
     email: str | None = None
     role_id: str | None = None
     active: bool | None = None
+    has_access: bool | None = None
 
 
 class UserAccessUpdate(BaseModel):
@@ -179,6 +187,10 @@ class PasswordPolicyUpdate(BaseModel):
 def login(data: LoginRequest, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == data.email, User.active == True).first()
     if not user or not verify_password(data.password, user.password):
+        raise HTTPException(status_code=401, detail="Credenciales incorrectas")
+    if user.has_access is False:
+        # Existe solo para asignarle equipos (estilo "sin acceso a consola" de
+        # AWS IAM) — no puede iniciar sesión aunque la contraseña sea correcta.
         raise HTTPException(status_code=401, detail="Credenciales incorrectas")
 
     policy = _get_policy(db)
@@ -277,9 +289,14 @@ def create_user(data: UserCreate, user=Depends(require_permission("users", "mana
         raise HTTPException(status_code=400, detail="Rol no válido")
 
     policy = _get_policy(db)
-    if data.password:
+    is_temp = False
+    if not data.has_access:
+        # Nunca va a iniciar sesión (solo existe para asignarle equipos): la
+        # contraseña es puro relleno para la columna NOT NULL, no hace falta
+        # que cumpla la política ni mostrarla como temporal.
+        plain = _gen_temp_password(policy)
+    elif data.password:
         plain = data.password
-        is_temp = False
         err = _validate_password_policy(plain, policy)
         if err:
             raise HTTPException(400, err)
@@ -292,6 +309,7 @@ def create_user(data: UserCreate, user=Depends(require_permission("users", "mana
         email=data.email,
         password=hash_password(plain),
         role_id=data.role_id,
+        has_access=data.has_access,
         must_change_password=is_temp,
         password_changed_at=datetime.utcnow(),
     )
@@ -314,26 +332,30 @@ def update_user(user_id: str, data: UserUpdate, user=Depends(require_permission(
     if data.role_id is not None and not db.query(Role).filter(Role.id == data.role_id).first():
         raise HTTPException(status_code=400, detail="Rol no válido")
 
-    # Un usuario no puede desactivarse a sí mismo: debe hacerlo otro admin
-    # (o alguien con permiso de gestión de usuarios).
+    # Un usuario no puede desactivarse (ni quitarse el acceso a la consola) a
+    # sí mismo: debe hacerlo otro admin (o alguien con permiso de gestión de
+    # usuarios).
     if data.active is False and u.id == user.id:
         raise HTTPException(status_code=403, detail="No puedes desactivar tu propia cuenta")
+    if data.has_access is False and u.id == user.id:
+        raise HTTPException(status_code=403, detail="No puedes quitarte tu propio acceso a la consola")
 
-    currently_manages_users = has_permission(db, u, "users", "manage") and u.active
+    currently_manages_users = has_permission(db, u, "users", "manage") and u.active and u.has_access is not False
     will_lose_it = currently_manages_users and (
-        (data.role_id is not None and data.role_id != u.role_id) or data.active is False
+        (data.role_id is not None and data.role_id != u.role_id) or data.active is False or data.has_access is False
     )
     if will_lose_it:
         # simular el nuevo rol para saber si de verdad perdería el permiso
         still_has_it = data.role_id == u.role_id if data.role_id is not None else True
-        if not still_has_it or data.active is False:
+        if not still_has_it or data.active is False or data.has_access is False:
             if _remaining_users_with_permission(db, "users", "manage", u.id) == 0:
-                raise HTTPException(400, "No puedes quitarle el rol ni desactivar al último usuario con permiso de gestión de usuarios y roles")
+                raise HTTPException(400, "No puedes quitarle el rol, el acceso ni desactivar al último usuario con permiso de gestión de usuarios y roles")
 
-    if data.name is not None:     u.name = data.name
-    if data.email is not None:    u.email = data.email
-    if data.role_id is not None:  u.role_id = data.role_id
-    if data.active is not None:   u.active = data.active
+    if data.name is not None:       u.name = data.name
+    if data.email is not None:      u.email = data.email
+    if data.role_id is not None:    u.role_id = data.role_id
+    if data.active is not None:     u.active = data.active
+    if data.has_access is not None: u.has_access = data.has_access
     db.commit()
     return _fmt_user(db, u)
 

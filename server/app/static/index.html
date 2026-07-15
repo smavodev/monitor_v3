@@ -51,6 +51,7 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);min-height:1
 .toggle-switch input:checked + .slider::before{transform:translateX(20px)}
 .btn-danger{background:rgba(239,68,68,.15);color:var(--red)}
 .btn-danger:hover{background:rgba(239,68,68,.25)}
+.btn:disabled{opacity:.4;cursor:not-allowed}
 .btn-success{background:rgba(16,185,129,.15);color:var(--green)}
 .login-error{background:rgba(239,68,68,.1);color:var(--red);padding:10px 14px;border-radius:var(--radius-sm);font-size:13px;margin-bottom:16px;display:none;box-shadow:var(--clay-in-sm)}
 /* ── App Layout ── */
@@ -610,10 +611,20 @@ canvas.spark{width:100%;height:80px}
         </div>
         <div id="inv-results-info" style="font-size:12px;color:var(--text-dim);margin-top:8px"></div>
       </div>
+      <!-- Barra de acciones: aparece al seleccionar uno o más equipos -->
+      <div id="inv-selection-bar" class="card" style="display:none;margin-bottom:12px;padding:10px 18px;align-items:center;gap:12px;flex-wrap:wrap">
+        <span id="inv-selection-count" style="font-size:13px;font-weight:600"></span>
+        <span style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn btn-sm btn-ghost" id="inv-btn-changes" onclick="inventoryToolbarAction('changes')" title="Historial de cambios">🕑 Historial de cambios</button>
+          <button class="btn btn-sm btn-ghost" id="inv-btn-assignment" onclick="inventoryToolbarAction('assignment')" title="Asignaciones">📋 Asignaciones</button>
+          <button class="btn btn-sm btn-danger" onclick="inventoryToolbarAction('delete')" title="Eliminar">🗑️ Eliminar</button>
+        </span>
+        <button class="btn btn-sm btn-ghost" style="margin-left:auto" onclick="clearInventorySelection()">Cancelar selección</button>
+      </div>
       <div class="card" style="overflow:auto">
         <table class="data-table" id="inventory-table">
         <thead><tr>
-            <th style="width:44px"></th>
+            <th style="width:36px"><input type="checkbox" id="inv-select-all" onchange="toggleSelectAllAgents(this.checked)"></th>
             <th>Equipo</th><th>Fabricante</th><th>Modelo</th><th>Serie</th>
             <th>SO</th><th>Procesador</th><th>RAM</th>
             <th style="text-align:right">CPU %</th>
@@ -991,6 +1002,15 @@ canvas.spark{width:100%;height:80px}
     <div class="form-group"><label class="form-label">Email</label><input class="form-input" id="user-email" type="email"></div>
     <div class="form-group"><label class="form-label">Rol</label>
       <select class="form-input" id="user-role-id"></select>
+    </div>
+    <div class="form-group">
+      <label style="display:flex;align-items:center;gap:9px;font-size:13px;cursor:pointer">
+        <input type="checkbox" id="user-has-access" style="width:15px;height:15px" checked>
+        Acceso a la consola
+      </label>
+      <div style="font-size:11px;color:var(--text-dim);margin-top:4px">
+        Desactívalo para personas que solo necesitas tener registradas para asignarles equipos (ej. empleados sin rol de TI) — nunca podrán iniciar sesión en el panel, tengan la contraseña que tengan.
+      </div>
     </div>
     <div class="modal-footer">
       <button class="btn btn-ghost" onclick="closeModal('modal-user')">Cancelar</button>
@@ -1577,16 +1597,18 @@ canvas.spark{width:100%;height:80px}
 
 <div class="modal-overlay" id="modal-assignment">
   <div class="modal" style="max-width:520px">
-    <div class="modal-title">Asignación de equipo</div>
-    <div class="form-group"><label class="form-label">Asignado a</label>
-      <select class="form-input" id="asg-user"><option value="">Sin asignar</option></select>
-    </div>
-    <div class="form-grid">
+    <div class="modal-title" id="modal-assignment-title">Asignar equipo</div>
+    <div id="asg-section-assign">
+      <div class="form-group"><label class="form-label">Asignado a</label>
+        <select class="form-input" id="asg-user"><option value="">Sin asignar</option></select>
+      </div>
       <div class="form-group"><label class="form-label">Fecha de asignación</label><input class="form-input" id="asg-assigned-at" type="date"></div>
-      <div class="form-group"><label class="form-label">Fecha de devolución</label><input class="form-input" id="asg-returned-at" type="date"></div>
+      <div class="form-group"><label class="form-label">Observaciones de entrega</label><textarea class="form-input" id="asg-assignment-notes" rows="2" style="resize:vertical" placeholder="Ej: entregado a Juan Pérez, estado físico, accesorios…"></textarea></div>
     </div>
-    <div class="form-group"><label class="form-label">Observaciones de entrega</label><textarea class="form-input" id="asg-assignment-notes" rows="2" style="resize:vertical" placeholder="Ej: entregado a Juan Pérez, estado físico, accesorios…"></textarea></div>
-    <div class="form-group"><label class="form-label">Observaciones de devolución</label><textarea class="form-input" id="asg-return-notes" rows="2" style="resize:vertical" placeholder="Ej: devuelto por falla de batería, faltante de cargador…"></textarea></div>
+    <div id="asg-section-return">
+      <div class="form-group"><label class="form-label">Fecha de devolución</label><input class="form-input" id="asg-returned-at" type="date"></div>
+      <div class="form-group"><label class="form-label">Observaciones de devolución</label><textarea class="form-input" id="asg-return-notes" rows="2" style="resize:vertical" placeholder="Ej: devuelto por falla de batería, faltante de cargador…"></textarea></div>
+    </div>
     <div class="modal-footer">
       <button class="btn btn-ghost" onclick="closeModal('modal-assignment')">Cancelar</button>
       <button class="btn btn-primary" onclick="saveAssignment()">Guardar</button>
@@ -1684,6 +1706,7 @@ let token = localStorage.getItem('sm_token');
 let currentUser = null;
 let allAgents = [];
 let currentAgentId = null;
+let selectedAgentIds = new Set();
 let areas = [];
 let allUsers = [];
 let evtSource = null;
@@ -2072,13 +2095,6 @@ function filterAgents() {
   renderAgents(allAgents.filter(a => (a.display_name||a.hostname).toLowerCase().includes(q) || (a.sede||'').toLowerCase().includes(q)));
 }
 
-async function deleteAgent(id, nameEnc) {
-  const name = decodeURIComponent(nameEnc);
-  if (!confirm(`¿Eliminar "${name}" del listado? Esto borra su historial (métricas, eventos, asignaciones).\n\nOJO: si el agente sigue instalado y corriendo en ese equipo, volverá a aparecer solo con el próximo reporte — esto no lo desinstala remotamente.`)) return;
-  await api(`/api/agents/${id}`, {method:'DELETE'});
-  fetchAgents();
-}
-
 // ── Detail ─────────────────────────────────────────────────────────────────
 async function openDetail(agentId) {
   currentAgentId = agentId;
@@ -2374,12 +2390,13 @@ function renderInventory() {
   const dl = document.getElementById('dtypes');
   if (dl) dl.innerHTML = dtypes.map(t => `<option value="${t}">`).join('');
 
+  // Limpiar de la selección cualquier equipo que ya no esté en la lista filtrada actual
+  selectedAgentIds.forEach(id => { if (!filtered.some(a => a.id === id)) selectedAgentIds.delete(id); });
+
   const tbody = document.getElementById('inventory-body');
   tbody.innerHTML = filtered.map(a => `<tr style="cursor:pointer" onclick="openDetail('${a.id}')">
     <td style="text-align:center" onclick="event.stopPropagation()">
-      <button class="btn btn-ghost" title="Historial de cambios" style="padding:4px 6px;font-size:14px" onclick="toggleAgentDetail('${a.id}','changes')">🕑</button>
-      <button class="btn btn-ghost" title="Asignaciones" style="padding:4px 6px;font-size:14px" onclick="toggleAgentDetail('${a.id}','assignment')">📋</button>
-      <button class="btn btn-ghost" title="Eliminar equipo" style="padding:4px 6px;font-size:14px" onclick="deleteAgent('${a.id}','${encodeURIComponent(a.display_name||a.hostname)}')">🗑️</button>
+      <input type="checkbox" data-id="${a.id}" onchange="toggleAgentSelect('${a.id}', this.checked)" ${selectedAgentIds.has(a.id) ? 'checked' : ''}>
     </td>
     <td><strong>${a.display_name||a.hostname}</strong><br><span style="font-size:11px;color:var(--text-dim)">${a.hostname}</span></td>
     <td>${a.manufacturer||'--'}</td>
@@ -2408,6 +2425,71 @@ function renderInventory() {
     if (row) { row.style.display = ''; renderAgentDetail(expandedAgentId, expandedPanel); }
     else { expandedAgentId = null; expandedPanel = null; }
   }
+
+  const selectAll = document.getElementById('inv-select-all');
+  if (selectAll) selectAll.checked = filtered.length > 0 && filtered.every(a => selectedAgentIds.has(a.id));
+  updateInventorySelectionBar();
+}
+
+// ── Selección múltiple + barra de acciones ──────────────────────────────────
+function toggleAgentSelect(id, checked) {
+  if (checked) selectedAgentIds.add(id); else selectedAgentIds.delete(id);
+  const selectAll = document.getElementById('inv-select-all');
+  const rows = document.querySelectorAll('#inventory-body input[type="checkbox"]');
+  if (selectAll) selectAll.checked = rows.length > 0 && [...rows].every(cb => cb.checked);
+  updateInventorySelectionBar();
+}
+
+function toggleSelectAllAgents(checked) {
+  document.querySelectorAll('#inventory-body input[type="checkbox"][data-id]').forEach(cb => {
+    cb.checked = checked;
+    const id = cb.dataset.id;
+    if (checked) selectedAgentIds.add(id); else selectedAgentIds.delete(id);
+  });
+  updateInventorySelectionBar();
+}
+
+function clearInventorySelection() {
+  selectedAgentIds.clear();
+  renderInventory();
+}
+
+function updateInventorySelectionBar() {
+  const bar = document.getElementById('inv-selection-bar');
+  if (!bar) return;
+  const n = selectedAgentIds.size;
+  bar.style.display = n > 0 ? 'flex' : 'none';
+  const countEl = document.getElementById('inv-selection-count');
+  if (countEl) countEl.textContent = n === 1 ? '1 equipo seleccionado' : `${n} equipos seleccionados`;
+  // Historial de cambios y Asignaciones muestran el detalle de UN equipo a la vez
+  const single = n === 1;
+  const bc = document.getElementById('inv-btn-changes');
+  const ba = document.getElementById('inv-btn-assignment');
+  if (bc) bc.disabled = !single;
+  if (ba) ba.disabled = !single;
+}
+
+function inventoryToolbarAction(kind) {
+  const ids = [...selectedAgentIds];
+  if (ids.length === 0) return;
+  if (kind === 'delete') {
+    const names = ids.map(id => {
+      const a = allAgents.find(x => x.id === id);
+      return a ? (a.display_name || a.hostname) : id;
+    });
+    if (!confirm(`¿Eliminar ${ids.length === 1 ? `"${names[0]}"` : `estos ${ids.length} equipos`} del listado? Esto borra su historial (métricas, eventos, asignaciones).\n\nOJO: si algún agente sigue instalado y corriendo, volverá a aparecer solo con el próximo reporte — esto no lo desinstala remotamente.\n\n${names.join('\n')}`)) return;
+    Promise.all(ids.map(id => api(`/api/agents/${id}`, {method:'DELETE'})))
+      .then(() => { selectedAgentIds.clear(); fetchAgents(); });
+    return;
+  }
+  // 'changes' / 'assignment': solo aplica con exactamente un equipo seleccionado
+  if (ids.length !== 1) return;
+  const id = ids[0];
+  document.querySelectorAll('[id^="inv-detail-"]').forEach(r => r.style.display = 'none');
+  expandedAgentId = id; expandedPanel = kind;
+  const row = document.getElementById('inv-detail-' + id);
+  if (row) row.style.display = '';
+  renderAgentDetail(id, kind);
 }
 
 function applyInventoryFilter() { renderInventory(); }
@@ -2842,7 +2924,7 @@ async function savePasswordPolicy() {
 
 // ── Usuarios ───────────────────────────────────────────────────────────────
 function userActions(u) {
-  const edit = `<button class="btn btn-xs btn-ghost" onclick="editUser('${u.id}','${encodeURIComponent(u.name)}','${u.email}','${u.role_id}')">Editar</button>`;
+  const edit = `<button class="btn btn-xs btn-ghost" onclick="editUser('${u.id}','${encodeURIComponent(u.name)}','${u.email}','${u.role_id}',${u.has_access === false ? 0 : 1})">Editar</button>`;
   const reset = `<button class="btn btn-xs btn-ghost" onclick="openUserAccessModal('${u.id}','${encodeURIComponent(u.name)}',${u.active})">Restablecer contraseña</button>`;
   // Nadie puede desactivarse ni eliminarse a sí mismo: lo debe hacer otro admin
   // (o quien tenga permiso de gestión de usuarios).
@@ -2862,6 +2944,7 @@ async function fetchUsers() {
     <td>
       ${u.name}
       ${u.must_change_password ? '<span style="font-size:10px;background:rgba(245,158,11,.15);color:var(--yellow);padding:2px 7px;border-radius:10px;margin-left:6px;font-weight:600">TEMP</span>' : ''}
+      ${u.has_access === false ? '<span style="font-size:10px;background:rgba(148,163,184,.15);color:var(--text-dim);padding:2px 7px;border-radius:10px;margin-left:6px;font-weight:600" title="No puede iniciar sesión — solo existe para asignarle equipos">SIN ACCESO</span>' : ''}
     </td>
     <td style="font-family:var(--mono);font-size:12px">${u.email}</td>
     <td><span class="badge admin">${u.role_name}</span></td>
@@ -2877,11 +2960,12 @@ async function _populateUserRolePicker(selectedRoleId) {
   if (selectedRoleId) sel.value = selectedRoleId;
 }
 
-async function editUser(id, nameEnc, email, roleId) {
+async function editUser(id, nameEnc, email, roleId, hasAccess) {
   const name = decodeURIComponent(nameEnc);
   document.getElementById('user-id').value = id;
   document.getElementById('user-name').value = name;
   document.getElementById('user-email').value = email;
+  document.getElementById('user-has-access').checked = hasAccess !== 0;
   await _populateUserRolePicker(roleId);
   document.getElementById('modal-user-title').textContent = 'Editar Usuario';
   openModal('modal-user');
@@ -2891,24 +2975,26 @@ async function openNewUser() {
   document.getElementById('user-id').value = '';
   document.getElementById('user-name').value = '';
   document.getElementById('user-email').value = '';
+  document.getElementById('user-has-access').checked = true;
   await _populateUserRolePicker(null);
   document.getElementById('modal-user-title').textContent = 'Nuevo Usuario';
   openModal('modal-user');
 }
 
 async function saveUser() {
-  const id     = document.getElementById('user-id').value;
-  const name   = document.getElementById('user-name').value.trim();
-  const email  = document.getElementById('user-email').value.trim();
-  const roleId = document.getElementById('user-role-id').value;
+  const id        = document.getElementById('user-id').value;
+  const name      = document.getElementById('user-name').value.trim();
+  const email     = document.getElementById('user-email').value.trim();
+  const roleId    = document.getElementById('user-role-id').value;
+  const hasAccess = document.getElementById('user-has-access').checked;
   if (!name || !email) return;
   if (id) {
-    await api(`/api/auth/users/${id}`, {method:'PUT', body: {name, email, role_id: roleId}});
+    await api(`/api/auth/users/${id}`, {method:'PUT', body: {name, email, role_id: roleId, has_access: hasAccess}});
     closeModal('modal-user');
     document.getElementById('user-id').value = '';
     fetchUsers();
   } else {
-    const res = await api('/api/auth/users', {method:'POST', body: {name, email, role_id: roleId}});
+    const res = await api('/api/auth/users', {method:'POST', body: {name, email, role_id: roleId, has_access: hasAccess}});
     closeModal('modal-user');
     if (res && res.temp_password) {
       document.getElementById('temp-pass-value').textContent = res.temp_password;
@@ -4154,6 +4240,8 @@ async function saveAgentChange() {
 // ── Despliegue inline de historial / asignaciones por fila ─────────────────
 let expandedAgentId = null, expandedPanel = null;
 let _assignmentAgentId = null;
+let _assignmentMode = 'assign'; // 'assign' | 'return'
+let _assignmentRecordId = null; // id del registro abierto a devolver (solo en modo 'return')
 
 function collapseAgentDetail() {
   if (expandedAgentId) {
@@ -4224,24 +4312,45 @@ async function renderAgentDetail(id, panel) {
           ${dev}${by}
         </div>`;
       }).join('') : '<div style="color:var(--text-dim);font-size:13px">Sin asignaciones registradas.</div>';
+      // "Devolver" solo tiene sentido si la asignación más reciente sigue abierta
+      // (tiene a quién se le entregó y todavía no se registró devolución).
+      const openRec = rows && rows[0] && (rows[0].assigned_to || rows[0].assigned_to_name) && !rows[0].returned_at ? rows[0] : null;
+      el.insertAdjacentHTML('beforeend',
+        '<div style="margin-top:10px;display:flex;gap:8px">' +
+        '<button class="btn btn-primary btn-sm" onclick="openAssignModal(\'' + id + '\')">Asignar</button>' +
+        (openRec ? '<button class="btn btn-ghost btn-sm" onclick="openReturnModal(\'' + id + '\',' + openRec.id + ')">Devolver</button>' : '') +
+        '</div>');
     } catch (e) { list.innerHTML = '<div style="color:var(--red)">' + (e.message || 'Error') + '</div>'; }
-    el.insertAdjacentHTML('beforeend',
-      '<div style="margin-top:10px"><button class="btn btn-primary btn-sm" onclick="openAssignmentModal(\'' + id + '\')">Agregar asignación</button></div>');
   }
 }
 
-async function openAssignmentModal(id) {
+function openAssignModal(id) {
   _assignmentAgentId = id;
+  _assignmentMode = 'assign';
+  _assignmentRecordId = null;
+  document.getElementById('modal-assignment-title').textContent = 'Asignar equipo';
+  document.getElementById('asg-section-assign').style.display = '';
+  document.getElementById('asg-section-return').style.display = 'none';
   const au = document.getElementById('asg-user');
   if (au) {
     au.innerHTML = '<option value="">Sin asignar</option>' +
       (allUsers || []).map(u => `<option value="${u.id}">${u.name}</option>`).join('');
     au.value = '';
   }
-  document.getElementById('asg-assigned-at').value    = '';
-  document.getElementById('asg-returned-at').value     = '';
+  document.getElementById('asg-assigned-at').value      = '';
   document.getElementById('asg-assignment-notes').value = '';
-  document.getElementById('asg-return-notes').value     = '';
+  openModal('modal-assignment');
+}
+
+function openReturnModal(id, recordId) {
+  _assignmentAgentId = id;
+  _assignmentMode = 'return';
+  _assignmentRecordId = recordId;
+  document.getElementById('modal-assignment-title').textContent = 'Devolver equipo';
+  document.getElementById('asg-section-assign').style.display = 'none';
+  document.getElementById('asg-section-return').style.display = '';
+  document.getElementById('asg-returned-at').value  = '';
+  document.getElementById('asg-return-notes').value = '';
   openModal('modal-assignment');
 }
 
@@ -4249,13 +4358,18 @@ async function saveAssignment() {
   const id = _assignmentAgentId;
   if (!id) return;
   try {
-    await api(`/api/agents/${id}/assignments`, {method:'POST', body: {
-      assigned_to:     document.getElementById('asg-user').value || null,
-      assigned_at:     document.getElementById('asg-assigned-at').value || null,
-      delivery_notes:  document.getElementById('asg-assignment-notes').value,
-      returned_at:     document.getElementById('asg-returned-at').value || null,
-      return_notes:    document.getElementById('asg-return-notes').value,
-    }});
+    if (_assignmentMode === 'return' && _assignmentRecordId) {
+      await api(`/api/agents/${id}/assignments/${_assignmentRecordId}`, {method:'PUT', body: {
+        returned_at:  document.getElementById('asg-returned-at').value || null,
+        return_notes: document.getElementById('asg-return-notes').value,
+      }});
+    } else {
+      await api(`/api/agents/${id}/assignments`, {method:'POST', body: {
+        assigned_to:    document.getElementById('asg-user').value || null,
+        assigned_at:    document.getElementById('asg-assigned-at').value || null,
+        delivery_notes: document.getElementById('asg-assignment-notes').value,
+      }});
+    }
     closeModal('modal-assignment');
     await fetchAgents();
     if (expandedAgentId === id && expandedPanel === 'assignment') await renderAgentDetail(id, 'assignment');

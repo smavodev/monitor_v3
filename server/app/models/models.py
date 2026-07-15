@@ -20,6 +20,7 @@ class User(Base):
     role                 = Column(String, default="technician")  # deprecado: se mantiene solo por compatibilidad de datos viejos, ya no se usa para permisos (ver role_id)
     role_id              = Column(String, ForeignKey("roles.id"), nullable=True, index=True)
     active               = Column(Boolean, default=True)
+    has_access           = Column(Boolean, default=True)  # False = existe solo para asignarle equipos (estilo "acceso a consola" de AWS IAM), no puede iniciar sesión
     must_change_password = Column(Boolean, default=False)
     token_version        = Column(Integer, default=0)  # incrementar invalida todos los tokens ya emitidos (revocar sesiones)
     password_changed_at  = Column(DateTime, server_default=func.now())  # para calcular expiración de contraseña
@@ -81,7 +82,7 @@ class Agent(Base):
     display_name    = Column(String)
     display_name_manual = Column(Boolean, default=False)
     sede_id         = Column(String, ForeignKey("sedes.id"), nullable=True)
-    assigned_user   = Column(String, ForeignKey("users.id"), nullable=True)
+    assigned_user   = Column(String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     notes           = Column(Text)
     first_seen      = Column(DateTime, server_default=func.now())
     last_seen       = Column(DateTime)

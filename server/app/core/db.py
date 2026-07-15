@@ -54,7 +54,7 @@ def get_current_user(
     except JWTError:
         raise exc
     user = db.query(User).filter(User.id == user_id, User.active == True).first()
-    if not user or payload.get("tv", 0) != (user.token_version or 0):
+    if not user or user.has_access is False or payload.get("tv", 0) != (user.token_version or 0):
         raise exc
     return user
 
@@ -77,6 +77,6 @@ def get_user_from_token_param(token: str = "", db = Depends(get_db)):
     except JWTError:
         raise exc
     user = db.query(User).filter(User.id == user_id, User.active == True).first()
-    if not user or payload.get("tv", 0) != (user.token_version or 0):
+    if not user or user.has_access is False or payload.get("tv", 0) != (user.token_version or 0):
         raise exc
     return user
