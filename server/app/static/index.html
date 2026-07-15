@@ -1557,7 +1557,6 @@ canvas.spark{width:100%;height:80px}
             <option value="Batería">Batería</option>
             <option value="Fuente">Fuente de poder</option>
             <option value="Disco">Disco</option>
-            <option value="device_type">Tipo de dispositivo</option>
             <option value="Otro">Otro</option>
           </select>
         </div>
@@ -1710,6 +1709,7 @@ let currentUser = null;
 let allAgents = [];
 let currentAgentId = null;
 let selectedAgentIds = new Set();
+let _lastInventorySig = null;
 let areas = [];
 let allUsers = [];
 let evtSource = null;
@@ -1899,10 +1899,13 @@ function startSSE() {
         }
       }
 
-      // Actualizar agentes
+      // Actualizar agentes. El Inventario NO se refresca solo con el vivo del
+      // SSE (a diferencia del Dashboard) — ahí tiene sentido ver todo en
+      // tiempo real, pero en Inventario es una vista de referencia/gestión y
+      // el refresco constante solo causaba parpadeo. Se actualiza al entrar
+      // a la vista o tras una acción real (fetchAgents ya lo hace).
       allAgents = d.agents;
       renderAgents(allAgents);
-      if (document.getElementById('view-inventory').classList.contains('active')) renderInventory();
       if (currentAgentId) {
         const fresh = allAgents.find(a => a.id === currentAgentId);
         if (fresh) updateDetailMetrics(fresh);
@@ -2396,6 +2399,19 @@ function renderInventory() {
   // Limpiar de la selección cualquier equipo que ya no esté en la lista filtrada actual
   selectedAgentIds.forEach(id => { if (!filtered.some(a => a.id === id)) selectedAgentIds.delete(id); });
 
+  // El refresco en vivo (SSE) llama a esta función cada pocos segundos aunque
+  // nada haya cambiado — reconstruir la tabla entera cada vez causaba un
+  // titileo visible (checkboxes, menú ⋯, etc. se recrean de cero). Si los
+  // datos relevantes son idénticos a la última vez, no se toca el DOM.
+  const sig = JSON.stringify(filtered.map(a => [a.id, a.display_name, a.hostname, a.manufacturer, a.model,
+    a.serial_number, a.os, a.cpu_model, a.cpu_cores, a.ram_total_gb, a.cpu_percent, a.ram_percent,
+    a.disk_percent, a.cpu_temp, a.sede, a.device_type, a.status])) + '|' + [...selectedAgentIds].sort().join(',');
+  if (sig === _lastInventorySig) {
+    updateInventorySelectionBar();
+    return;
+  }
+  _lastInventorySig = sig;
+
   const tbody = document.getElementById('inventory-body');
   tbody.innerHTML = filtered.map(a => `<tr style="cursor:pointer" onclick="openDetail('${a.id}')">
     <td style="text-align:center" onclick="event.stopPropagation()">
@@ -2433,10 +2449,15 @@ function renderInventory() {
     </td>
   </tr>`).join('');
 
-  // Preservar el despliegue inline (historial/asignaciones) tras re-render
+  // Preservar el despliegue inline (historial/asignaciones) tras re-render,
+  // SIN volver a pedir/pintar su contenido — este render se dispara cada
+  // pocos segundos por el refresco en vivo (SSE) y volver a cargar el panel
+  // cada vez hacía que titilara y disparaba un fetch innecesario. El
+  // contenido solo se actualiza cuando el usuario hace una acción real
+  // (abrir el panel, guardar un cambio/asignación, etc.), no en cada tick.
   if (expandedAgentId) {
     const row = document.getElementById('inv-detail-' + expandedAgentId);
-    if (row) { row.style.display = ''; renderAgentDetail(expandedAgentId, expandedPanel); }
+    if (row) row.style.display = '';
     else { expandedAgentId = null; expandedPanel = null; }
   }
 
@@ -4141,7 +4162,7 @@ function deviceTypeIcon(t) {
   }
   return DEVICE_ICON_KEYS[icon] || ICON_OTHER;
 }
-const CHANGE_FIELD_LABEL = { RAM:'RAM', 'Batería':'Batería', Fuente:'Fuente de poder', Disco:'Disco', device_type:'Tipo de dispositivo', Otro:'Otro' };
+const CHANGE_FIELD_LABEL = { RAM:'RAM', 'Batería':'Batería', Fuente:'Fuente de poder', Disco:'Disco', Otro:'Otro' };
 let _changeAgentId = null;
 
 // ── Configuración de tipos de dispositivo ───────────────────────────────────

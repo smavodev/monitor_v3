@@ -154,12 +154,13 @@ def receive_metrics(payload: MetricPayload, request: Request, db: Session = Depe
     # Tipo de dispositivo:
     # - backend: jamás toca agent.device_type si device_type_manual=True
     # - frontend: si el usuario lo tocó, se marca explícitamente
+    # No se registra en el historial de cambios: ese historial es para
+    # componentes físicos (RAM, batería, fuente, disco), no para la
+    # clasificación Laptop/Desktop/Tablet.
     if payload.device_type:
         if agent.device_type_manual:
             pass  # humano lo fijó ⇒ respetar
         else:
-            if agent.device_type != payload.device_type:
-                _log_agent_change(db, agent, "device_type", agent.device_type, payload.device_type)
             agent.device_type = payload.device_type
 
     agent.ip = request.client.host if request.client else None
@@ -524,11 +525,10 @@ def update_agent(agent_id: str, data: dict, user = Depends(require_permission("i
     if "notes" in data:        a.notes = data["notes"]
     if "sede_id" in data:      a.sede_id = data["sede_id"] or None
     if "device_type" in data and data.get("device_type"):
-        new_dt = str(data["device_type"])
-        if a.device_type != new_dt:
-            _log_agent_change(db, a, "device_type", a.device_type, new_dt,
-                              changed_by=(user.name or user.email if user else None))
-        a.device_type = new_dt
+        # No se registra en el historial de cambios: ese historial es para
+        # componentes físicos (RAM, batería, fuente, disco), no para la
+        # clasificación Laptop/Desktop/Tablet.
+        a.device_type = str(data["device_type"])
         a.device_type_manual = True
     if "assigned_user" in data:
         a.assigned_user = data["assigned_user"] or None
