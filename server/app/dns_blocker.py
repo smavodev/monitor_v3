@@ -80,7 +80,13 @@ def _build_state():
     db = Session()
     try:
         active = db.query(BlockedSite).filter(BlockedSite.active == True).all()
-        agents = db.query(Agent).filter(Agent.ip.isnot(None), Agent.ip != "").all()
+        # Ordenado por last_seen ascendente: si dos equipos comparten IP
+        # (mismo router/NAT), el bucle de abajo va pisando by_ip[ip] en este
+        # orden, así que el último en escribir —y el que queda vigente— es
+        # el visto más recientemente (antes no había order_by y el que
+        # ganaba el empate era arbitrario).
+        agents = db.query(Agent).filter(Agent.ip.isnot(None), Agent.ip != "")\
+                    .order_by(Agent.last_seen.asc()).all()
 
         by_ip = {}
         for a in agents:
