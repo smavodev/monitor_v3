@@ -2,6 +2,11 @@
 chcp 65001 >nul 2>&1
 title SmartMonitor v3 - Instalador Windows (instalacion limpia)
 
+REM IP del servidor SmartMonitor por defecto — UNICO lugar a tocar si el
+REM server se muda de IP. Se usa mas abajo solo si no se pasa un argumento
+REM (install-agent-windows.bat <IP_SERVIDOR>).
+set "SMARTMONITOR_DEFAULT_SERVER_IP=52.73.185.45"
+
 net session >nul 2>&1
 if %errorlevel% neq 0 (
     echo Ejecuta este archivo como Administrador.
@@ -15,9 +20,9 @@ set "PS_SRC=%~dp0smartmonitor-push.ps1"
 set "PS_DEST=%INSTALL_DIR%\smartmonitor-push.ps1"
 
 REM IP o dominio del servidor SmartMonitor: uso "install-agent-windows.bat <IP_SERVIDOR>"
-REM Si no se pasa nada, usa la IP anterior por compatibilidad con instalaciones existentes.
+REM Si no se pasa nada, usa la constante de arriba (SMARTMONITOR_DEFAULT_SERVER_IP).
 set "SERVER_IP=%~1"
-if "%SERVER_IP%"=="" set "SERVER_IP=52.73.185.45"
+if "%SERVER_IP%"=="" set "SERVER_IP=%SMARTMONITOR_DEFAULT_SERVER_IP%"
 
 if not exist "%PS_SRC%" (
     echo [ERROR] No se encuentra smartmonitor-push.ps1 en la misma carpeta.
