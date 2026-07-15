@@ -52,9 +52,6 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);min-height:1
 .btn-danger{background:rgba(239,68,68,.15);color:var(--red)}
 .btn-danger:hover{background:rgba(239,68,68,.25)}
 .btn:disabled{opacity:.4;cursor:not-allowed}
-.row-menu{position:absolute;top:100%;left:0;z-index:20;background:var(--surface);border-radius:10px;box-shadow:-9px -9px 20px var(--clay-hi),12px 12px 26px var(--clay-lo);padding:6px;min-width:180px;display:flex;flex-direction:column;gap:2px}
-.row-menu button{background:none;border:none;text-align:left;padding:8px 10px;font-size:13px;border-radius:7px;cursor:pointer;color:var(--text-mid);white-space:nowrap}
-.row-menu button:hover{background:var(--surface-hover,rgba(255,255,255,.06))}
 .btn-success{background:rgba(16,185,129,.15);color:var(--green)}
 .login-error{background:rgba(239,68,68,.1);color:var(--red);padding:10px 14px;border-radius:var(--radius-sm);font-size:13px;margin-bottom:16px;display:none;box-shadow:var(--clay-in-sm)}
 /* ── App Layout ── */
@@ -2420,12 +2417,8 @@ function renderInventory() {
     <td>
       <div style="display:flex;align-items:center;gap:6px;position:relative">
         <div><strong>${a.display_name||a.hostname}</strong><br><span style="font-size:11px;color:var(--text-dim)">${a.hostname}</span></div>
-        <div style="position:relative" onclick="event.stopPropagation()">
-          <button class="btn btn-ghost" title="Más opciones" style="padding:2px 7px;font-size:14px;line-height:1" onclick="toggleRowMenu('${a.id}')">⋯</button>
-          <div id="row-menu-${a.id}" class="row-menu" style="display:none">
-            <button onclick="closeRowMenu(); toggleAgentDetail('${a.id}','changes')">🕑 Historial de cambios</button>
-            <button onclick="closeRowMenu(); toggleAgentDetail('${a.id}','assignment')">📋 Ver asignaciones</button>
-          </div>
+        <div onclick="event.stopPropagation()">
+          <button class="btn btn-ghost" title="Historial de asignaciones" style="padding:2px 7px;font-size:14px;line-height:1" onclick="toggleAgentDetail('${a.id}','assignment')">📋</button>
         </div>
       </div>
     </td>
@@ -4303,24 +4296,6 @@ let _assignmentAgentId = null;
 let _assignmentMode = 'assign'; // 'assign' | 'return'
 let _assignmentRecordId = null; // id del registro abierto a devolver (solo en modo 'return')
 
-let _openRowMenuId = null;
-function toggleRowMenu(id) {
-  if (_openRowMenuId === id) { closeRowMenu(); return; }
-  closeRowMenu();
-  const menu = document.getElementById('row-menu-' + id);
-  if (menu) { menu.style.display = 'flex'; _openRowMenuId = id; }
-}
-function closeRowMenu() {
-  if (_openRowMenuId) {
-    const menu = document.getElementById('row-menu-' + _openRowMenuId);
-    if (menu) menu.style.display = 'none';
-    _openRowMenuId = null;
-  }
-}
-document.addEventListener('click', (e) => {
-  if (_openRowMenuId && !e.target.closest('.row-menu') && !e.target.closest('[title="Más opciones"]')) closeRowMenu();
-});
-
 function collapseAgentDetail() {
   if (expandedAgentId) {
     const r = document.getElementById('inv-detail-' + expandedAgentId);
@@ -4336,6 +4311,15 @@ function toggleAgentDetail(id, panel) {
   const row = document.getElementById('inv-detail-' + id);
   if (row) row.style.display = '';
   renderAgentDetail(id, panel);
+}
+
+function toggleAssignmentMore(id, extra) {
+  const more = document.getElementById('inv-assign-more-' + id);
+  const btn = document.getElementById('inv-assign-toggle-' + id);
+  if (!more || !btn) return;
+  const show = more.style.display === 'none';
+  more.style.display = show ? '' : 'none';
+  btn.textContent = show ? '− Ver menos' : ('+ Ver ' + extra + ' más');
 }
 
 async function renderAgentDetail(id, panel) {
@@ -4374,7 +4358,8 @@ async function renderAgentDetail(id, panel) {
     const list = document.getElementById('inv-assign-' + id);
     try {
       const rows = await api(`/api/agents/${id}/assignments`);
-      list.innerHTML = (rows && rows.length) ? rows.map(r => {
+      const ASSIGN_PAGE = 3;
+      const cards = (rows || []).map(r => {
         const name = r.assigned_to_name || (r.assigned_to ? 'ID ' + r.assigned_to : '—');
         const del = `<button class="btn btn-ghost btn-sm" title="Eliminar" onclick="deleteAssignment('${id}',${r.id})">✕</button>`;
         const dev = (r.returned_at || r.return_notes)
@@ -4390,14 +4375,21 @@ async function renderAgentDetail(id, panel) {
           ${r.delivery_notes ? `<div style="font-size:12px;color:var(--text-mid);margin-top:2px"><b>Entrega:</b> ${r.delivery_notes}</div>` : ''}
           ${dev}${by}
         </div>`;
-      }).join('') : '<div style="color:var(--text-dim);font-size:13px">Sin asignaciones registradas.</div>';
+      });
+      const extra = cards.length - ASSIGN_PAGE;
+      list.innerHTML = cards.length ? (
+        cards.slice(0, ASSIGN_PAGE).join('') +
+        (extra > 0 ? `<div id="inv-assign-more-${id}" style="display:none">${cards.slice(ASSIGN_PAGE).join('')}</div>
+          <button class="btn btn-ghost btn-sm" id="inv-assign-toggle-${id}" style="margin-top:4px" onclick="toggleAssignmentMore('${id}', ${extra})">+ Ver ${extra} más</button>` : '')
+      ) : '<div style="color:var(--text-dim);font-size:13px">Sin asignaciones registradas.</div>';
       // "Devolver" solo tiene sentido si la asignación más reciente sigue abierta
       // (tiene a quién se le entregó y todavía no se registró devolución).
       const openRec = rows && rows[0] && (rows[0].assigned_to || rows[0].assigned_to_name) && !rows[0].returned_at ? rows[0] : null;
       el.insertAdjacentHTML('beforeend',
-        '<div style="margin-top:10px;display:flex;gap:8px">' +
+        '<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">' +
         '<button class="btn btn-primary btn-sm" onclick="openAssignModal(\'' + id + '\')">Asignar</button>' +
         (openRec ? '<button class="btn btn-ghost btn-sm" onclick="openReturnModal(\'' + id + '\',' + openRec.id + ')">Devolver</button>' : '') +
+        '<button class="btn btn-ghost btn-sm" onclick="toggleAgentDetail(\'' + id + '\',\'changes\')">🕑 Historial de cambios de piezas / reparaciones</button>' +
         '</div>');
     } catch (e) { list.innerHTML = '<div style="color:var(--red)">' + (e.message || 'Error') + '</div>'; }
   }
