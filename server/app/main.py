@@ -8,7 +8,7 @@ from core.db import engine, get_db, hash_password, Session as DBSession
 from models.models import Base, User
 from routers import auth, agents, sedes, config, alerts, discovery, reports
 from routers import blocked_sites, block_schedules, block_reports, network_gate, block_attempts
-from routers import roles
+from routers import roles, headscale
 from dns_blocker import start_dns_blocker
 from sqlalchemy.orm import Session
 
@@ -52,6 +52,8 @@ def startup():
         # para poder registrar ambos equipos como filas separadas.
         "DROP INDEX IF EXISTS ix_agents_hostname",
         "CREATE INDEX IF NOT EXISTS ix_agents_hostname ON agents (hostname)",
+        "ALTER TABLE agents ADD COLUMN IF NOT EXISTS tailnet_ip VARCHAR",
+        "CREATE INDEX IF NOT EXISTS ix_agents_tailnet_ip ON agents (tailnet_ip)",
         "ALTER TABLE agents ADD COLUMN IF NOT EXISTS assigned_at DATE",
         "ALTER TABLE agents ADD COLUMN IF NOT EXISTS returned_at DATE",
         "ALTER TABLE agents ADD COLUMN IF NOT EXISTS assignment_notes TEXT",
@@ -180,6 +182,7 @@ app.include_router(block_schedules.router)
 app.include_router(block_reports.router)
 app.include_router(network_gate.router)
 app.include_router(block_attempts.router)
+app.include_router(headscale.router)
 
 # ── Static files ───────────────────────────────────────────────────────────
 static_path = Path("/app/static")

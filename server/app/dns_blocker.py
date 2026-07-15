@@ -87,6 +87,13 @@ def _build_state():
         for a in agents:
             blocked = resolve_domains_for_agent(a, active)
             all_domains = resolve_all_configured_domains(a, active)
+
+            # tailnet_ip (WireGuard/Headscale) es unica por equipo de verdad
+            # -no la asigna un router compartido-, asi que no hace falta
+            # unirla con nadie: se mapea directo, sin ambiguedad posible.
+            if a.tailnet_ip:
+                by_ip[a.tailnet_ip] = {"agent_id": a.id, "blocked": blocked, "all": all_domains}
+
             existing = by_ip.get(a.ip)
             if existing:
                 # Varios equipos comparten esta IP (mismo router/NAT de

@@ -82,6 +82,11 @@ class Agent(Base):
     # identidad real y única del equipo es serial_number (ver más abajo).
     hostname        = Column(String, nullable=False, index=True)
     ip              = Column(String, nullable=True, index=True)
+    # IP unica dentro del tailnet de Headscale (WireGuard), si el agente esta
+    # conectado por tunel. A diferencia de `ip` (la IP publica, que varios
+    # equipos de una misma oficina comparten), esta identifica al equipo sin
+    # ambiguedad — dns_blocker.py la prefiere sobre `ip` cuando existe.
+    tailnet_ip      = Column(String, nullable=True, index=True)
     display_name    = Column(String)
     display_name_manual = Column(Boolean, default=False)
     sede_id         = Column(String, ForeignKey("sedes.id"), nullable=True)

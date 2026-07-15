@@ -133,6 +133,7 @@ class MetricPayload(BaseModel):
     ram_total_gb:       Optional[float] = None
     installed_software: list          = []
     device_type: Optional[str] = None  # Laptop|Desktop|Tablet|Other (auto-detectado)
+    tailnet_ip: Optional[str] = None  # IP unica del tunel WireGuard/Headscale, si esta conectado
     # Métricas
     cpu_percent: float
     ram_percent: float
@@ -201,6 +202,7 @@ def receive_metrics(payload: MetricPayload, request: Request, db: Session = Depe
     if payload.ram_slots_used:   agent.ram_slots_used   = payload.ram_slots_used
     if payload.ram_slots_detail:   agent.ram_slots_detail   = payload.ram_slots_detail
     if payload.ram_total_gb:       agent.ram_total_gb       = payload.ram_total_gb
+    if payload.tailnet_ip:         agent.tailnet_ip         = payload.tailnet_ip
     if payload.installed_software:
         agent.installed_software  = payload.installed_software
         agent.software_updated_at = now

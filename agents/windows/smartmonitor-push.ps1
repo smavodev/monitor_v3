@@ -4,6 +4,13 @@ $HOSTNAME_PC  = $env:COMPUTERNAME
 $SW_HASH_FILE = "C:\SmartMonitor\.sw_hash"
 $LOG_FILE     = "C:\SmartMonitor\agent.log"
 $INTERVAL     = 60
+$TAILSCALE_EXE = "C:\Program Files\Tailscale\tailscale.exe"
+# IP unica del equipo dentro del tunel WireGuard (Headscale), si esta
+# conectado. Null hasta que Setup-WireguardTunnel lo resuelva. Se manda en
+# cada Send-Metrics para que dns_blocker.py identifique a este equipo sin
+# depender de la IP publica compartida de la oficina.
+$script:TailnetIp       = $null
+$script:TailnetServerIp = $null
 
 function Write-Log($msg) {
     $line = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $msg"
@@ -187,9 +194,63 @@ function Get-BlockList {
 }
 
 function Get-ServerDnsIp {
+    # Si el tunel WireGuard esta activo, el DNS se apunta a la IP del server
+    # DENTRO del tunel (unica de verdad) en vez de la IP publica compartida
+    # de la oficina - asi dns_blocker.py identifica a este equipo sin
+    # ambiguedad. Si el tunel no esta disponible, se cae al comportamiento
+    # de siempre (IP publica) sin que el bloqueo deje de funcionar.
+    if ($script:TailnetIp -and $script:TailnetServerIp) {
+        return $script:TailnetServerIp
+    }
     try {
         return ($SERVER -replace '^https?://' -replace ':.*$', '')
     } catch { return $SERVER }
+}
+
+function Get-TailscaleIp {
+    try {
+        if (-not (Test-Path $TAILSCALE_EXE)) { return $null }
+        $ip = & $TAILSCALE_EXE ip -4 2>$null
+        if ($LASTEXITCODE -eq 0 -and $ip) { return $ip.Trim() }
+    } catch {}
+    return $null
+}
+
+function Setup-WireguardTunnel {
+    # Registra este equipo en el tunel WireGuard (Headscale) si todavia no lo
+    # esta. No es indispensable para que el agente funcione: si esto falla o
+    # el cliente Tailscale no esta instalado, el bloqueo sigue funcionando
+    # igual que siempre por la IP publica (ver Get-ServerDnsIp).
+    try {
+        if (-not (Test-Path $TAILSCALE_EXE)) {
+            Write-Log "WireGuard: cliente Tailscale no instalado, se omite"
+            return
+        }
+        $existingIp = Get-TailscaleIp
+        if ($existingIp) {
+            $script:TailnetIp = $existingIp
+            if (-not $script:TailnetServerIp) {
+                try {
+                    $reg = Invoke-RestMethod -Uri "$SERVER/api/agents/wireguard/preauthkey" -Method POST -Body (@{ hostname = $HOSTNAME_PC } | ConvertTo-Json) -ContentType "application/json" -TimeoutSec 10
+                    $script:TailnetServerIp = $reg.server_tailnet_ip
+                } catch {}
+            }
+            return
+        }
+        Write-Log "WireGuard: sin conectar, pidiendo pre-auth key al servidor..."
+        $reg = Invoke-RestMethod -Uri "$SERVER/api/agents/wireguard/preauthkey" -Method POST -Body (@{ hostname = $HOSTNAME_PC } | ConvertTo-Json) -ContentType "application/json" -TimeoutSec 10
+        $script:TailnetServerIp = $reg.server_tailnet_ip
+        & $TAILSCALE_EXE up --login-server=$($reg.login_server) --authkey=$($reg.authkey) --hostname=$HOSTNAME_PC --accept-dns=false --timeout=30s 2>&1 | Out-Null
+        Start-Sleep -Seconds 3
+        $script:TailnetIp = Get-TailscaleIp
+        if ($script:TailnetIp) {
+            Write-Log "WireGuard: conectado, IP=$($script:TailnetIp) (server=$($script:TailnetServerIp))"
+        } else {
+            Write-Log "WARN: WireGuard no conecto (reintenta solo)"
+        }
+    } catch {
+        Write-Log "WARN: no se pudo configurar WireGuard: $_"
+    }
 }
 
 function Set-CentralDns {
@@ -295,6 +356,7 @@ function Send-Metrics($hw, $ram, $swToSend) {
         top_processes      = @($procs)
         ram_slots_detail   = @($ram.detail)
         installed_software = @($swToSend)
+        tailnet_ip         = $script:TailnetIp
     }
 
     $body = $payload | ConvertTo-Json -Depth 5 -Compress
@@ -344,6 +406,10 @@ try {
 Disable-BrowserDoH
 Block-DoHEndpoints
 
+# Intento inicial de conectar el tunel WireGuard (no bloqueante: si falla,
+# el agente sigue funcionando por IP publica igual que siempre)
+Setup-WireguardTunnel
+
 # Loop principal
 # El bloqueo (dominios/excepciones/horario/red) se revisa cada BLOCKLIST_POLL_SEC
 # fijo, independiente del intervalo de métricas — así una excepción que agregas o
@@ -353,6 +419,7 @@ $BLOCKLIST_POLL_SEC = 10
 $prevSwHash = if (Test-Path $SW_HASH_FILE) { (Get-Content $SW_HASH_FILE -Raw).Trim() } else { "" }
 $loopCount   = 0
 $lastMetrics = [DateTime]::MinValue
+$lastWireguardRetry = Get-Date
 
 Write-Log "Loop iniciado - metricas cada ${INTERVAL}s, bloqueo cada ${BLOCKLIST_POLL_SEC}s"
 
@@ -388,6 +455,14 @@ while ($true) {
 
             $lastMetrics = Get-Date
             $loopCount++
+        }
+
+        # Reintenta conectar el tunel WireGuard cada ~60s si todavia no lo
+        # logro (ej. el servicio de Tailscale tardo en arrancar, o el server
+        # no tenia Headscale configurado en ese momento).
+        if (-not $script:TailnetIp -and ((Get-Date) - $lastWireguardRetry).TotalSeconds -ge 60) {
+            Setup-WireguardTunnel
+            $lastWireguardRetry = Get-Date
         }
 
         $blockResult = Get-BlockList

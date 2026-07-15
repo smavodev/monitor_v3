@@ -100,6 +100,19 @@ echo Probando conexion con el servidor...
 powershell -ExecutionPolicy Bypass -Command "try{Invoke-WebRequest 'http://%SERVER_IP%:8000' -TimeoutSec 5 -UseBasicParsing | Out-Null; Write-Host '[OK] Servidor accesible'}catch{Write-Host '[WARN] No se pudo conectar al servidor.'}"
 
 echo.
+echo Instalando cliente Tailscale (tunel WireGuard para identificar el equipo sin ambiguedad de IP compartida)...
+if exist "%ProgramFiles%\Tailscale\tailscale.exe" (
+    echo [OK] Tailscale ya estaba instalado
+) else (
+    powershell -ExecutionPolicy Bypass -Command "try { Invoke-WebRequest 'https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi' -OutFile 'C:\SmartMonitor\tailscale-setup.msi' -TimeoutSec 60 -UseBasicParsing; Write-Host '[OK] Tailscale descargado' } catch { Write-Host '[WARN] No se pudo descargar Tailscale (reintenta luego re-ejecutando este instalador; el agente sigue bloqueando por IP publica mientras tanto)' }"
+    if exist "C:\SmartMonitor\tailscale-setup.msi" (
+        msiexec /i "C:\SmartMonitor\tailscale-setup.msi" /quiet /norestart
+        del /f /q "C:\SmartMonitor\tailscale-setup.msi" >nul 2>&1
+        echo [OK] Tailscale instalado
+    )
+)
+
+echo.
 echo Instalando certificado de la CA del servidor (para que la pagina de bloqueo se vea tambien en sitios HTTPS)...
 powershell -ExecutionPolicy Bypass -Command ^
     "try { $r = Invoke-WebRequest 'http://%SERVER_IP%/smartmonitor-ca.crt' -TimeoutSec 5 -UseBasicParsing;" ^
