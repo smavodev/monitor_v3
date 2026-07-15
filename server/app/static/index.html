@@ -619,7 +619,10 @@ canvas.spark{width:100%;height:80px}
             <button class="btn btn-ghost btn-sm" style="height:38px" onclick="clearInventoryFilter()">Limpiar</button>
           </div>
         </div>
-        <div id="inv-results-info" style="font-size:12px;color:var(--text-dim);margin-top:8px"></div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">
+          <div id="inv-results-info" style="font-size:12px;color:var(--text-dim)"></div>
+          <button class="btn btn-ghost btn-sm" id="inv-filter-user-history" style="display:none" onclick="toggleUserFilterShowAll()"></button>
+        </div>
       </div>
       <!-- Barra de acciones: siempre visible, los botones se deshabilitan sin selección -->
       <div id="inv-selection-bar" class="card" style="display:flex;margin-bottom:12px;padding:10px 18px;align-items:center;gap:12px;flex-wrap:wrap">
@@ -1749,6 +1752,7 @@ let currentAgentId = null;
 let selectedAgentIds = new Set();
 let _lastInventorySig = null;
 let _invFilterUserAssignments = null; // Map agent_id -> registro de asignación, del usuario filtrado en Inventario (null = sin filtro de usuario)
+let _invFilterUserShowAll = false; // false = solo el equipo vigente de ese usuario; true = incluye los anteriores también
 let areas = [];
 let allUsers = [];
 let evtSource = null;
@@ -2434,15 +2438,31 @@ function renderInventory() {
     if (sede && (a.sede_id || '') !== sede) return false;
     if (tipo && (a.device_type || '') !== tipo) return false;
     if (status && (a.status || '') !== status) return false;
-    // Al filtrar por usuario se muestran TODOS sus equipos, actuales y
-    // anteriores (_invFilterUserAssignments trae el historial completo de esa
-    // persona) — no solo la asignación vigente.
-    if (userId && (!_invFilterUserAssignments || !_invFilterUserAssignments.has(a.id))) return false;
+    // Al filtrar por usuario, por defecto solo se muestra el equipo vigente
+    // de esa persona; los anteriores solo aparecen si pidió "Ver historial
+    // completo" (_invFilterUserShowAll).
+    if (userId) {
+      if (!_invFilterUserAssignments || !_invFilterUserAssignments.has(a.id)) return false;
+      const rec = _invFilterUserAssignments.get(a.id);
+      if (!_invFilterUserShowAll && rec.returned_at) return false;
+    }
     return true;
   });
 
   const info = document.getElementById('inv-results-info');
   if (info) info.textContent = `${filtered.length} de ${allAgents.length} equipos`;
+
+  const historyBtn = document.getElementById('inv-filter-user-history');
+  if (historyBtn) {
+    const userHasPast = userId && _invFilterUserAssignments &&
+      [..._invFilterUserAssignments.values()].some(r => r.returned_at);
+    if (userHasPast) {
+      historyBtn.style.display = '';
+      historyBtn.textContent = _invFilterUserShowAll ? '− Ocultar equipos anteriores' : '+ Ver historial completo (incluye equipos anteriores)';
+    } else {
+      historyBtn.style.display = 'none';
+    }
+  }
 
   // Tipos de dispositivo configurados + los personalizados ya en uso
   const dtypes = deviceTypeNames();
@@ -2620,6 +2640,7 @@ function applyInventoryFilter() { renderInventory(); }
 
 async function onInventoryUserFilterChange() {
   const userId = document.getElementById('inv-filter-user')?.value || '';
+  _invFilterUserShowAll = false;
   if (!userId) {
     _invFilterUserAssignments = null;
     renderInventory();
@@ -2638,10 +2659,16 @@ async function onInventoryUserFilterChange() {
   } catch (e) { /* deja el resultado vacío */ }
 }
 
+function toggleUserFilterShowAll() {
+  _invFilterUserShowAll = !_invFilterUserShowAll;
+  renderInventory();
+}
+
 function clearInventoryFilter() {
   const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
   set('inv-filter-search', ''); set('inv-filter-sede', ''); set('inv-filter-type', ''); set('inv-filter-status', ''); set('inv-filter-user', '');
   _invFilterUserAssignments = null;
+  _invFilterUserShowAll = false;
   renderInventory();
 }
 
@@ -4392,6 +4419,7 @@ let _assignmentMode = 'assign'; // 'assign' | 'return' | 'edit'
 let _assignmentRecordId = null; // id del registro abierto a devolver/editar
 let _assignmentRowsCache = {}; // agentId -> registros de asignación tal como vinieron de la API
 let _changeRowsCache = {};     // agentId -> registros de historial de cambios
+let _assignmentPanelShowAll = false; // false = solo la asignación vigente del equipo; true = incluye las anteriores
 
 function collapseAgentDetail() {
   if (expandedAgentId) {
@@ -4409,9 +4437,15 @@ function toggleAgentDetail(id, panel) {
   // el panel parecía "no desplegar" nada pese a tener contenido cargado.
   document.querySelectorAll('tr[id^="inv-detail-"]').forEach(r => r.style.display = 'none');
   expandedAgentId = id; expandedPanel = panel;
+  _assignmentPanelShowAll = false; // al abrir un panel nuevo, arranca colapsado
   const row = document.getElementById('inv-detail-' + id);
   if (row) row.style.display = '';
   renderAgentDetail(id, panel);
+}
+
+function toggleAssignmentShowAll(id) {
+  _assignmentPanelShowAll = !_assignmentPanelShowAll;
+  renderAgentDetail(id, 'assignment');
 }
 
 async function renderAgentDetail(id, panel) {
@@ -4453,7 +4487,7 @@ async function renderAgentDetail(id, panel) {
     try {
       const rows = await api(`/api/agents/${id}/assignments`);
       _assignmentRowsCache[id] = rows || [];
-      const trs = (rows || []).map(r => {
+      const buildTr = r => {
         const name = r.assigned_to_name || (r.assigned_to ? 'ID ' + r.assigned_to : '—');
         const entrega = `${r.assigned_at || '—'}${r.delivery_notes ? `<div style="margin-top:2px">${r.delivery_notes}</div>` : ''}`;
         const devolucion = (r.returned_at || r.return_notes)
@@ -4467,13 +4501,24 @@ async function renderAgentDetail(id, panel) {
           <td style="white-space:nowrap">${devolucion}</td>
           <td style="text-align:right">${edit}</td>
         </tr>`;
-      });
-      list.innerHTML = trs.length ? (
-        `<table class="data-table" style="width:100%;font-size:13px">
+      };
+      // Por defecto solo se muestra la asignación vigente; las anteriores
+      // quedan ocultas hasta que se pide explícitamente "Ver historial completo".
+      const current = (rows || []).filter(r => !r.returned_at);
+      const past = (rows || []).filter(r => r.returned_at);
+      const shown = _assignmentPanelShowAll ? (rows || []) : current;
+      const table = shown.length ? `
+        <table class="data-table" style="width:100%;font-size:13px">
           <thead><tr><th>Asignado a</th><th>Entrega</th><th>Devolución</th><th></th></tr></thead>
-          <tbody>${trs.join('')}</tbody>
-        </table>`
-      ) : '<div style="text-align:center;padding:16px 10px;color:var(--text-dim);font-size:13px;border:1px dashed var(--border);border-radius:10px">📋 Sin asignaciones registradas para este equipo.</div>';
+          <tbody>${shown.map(buildTr).join('')}</tbody>
+        </table>` : '';
+      const empty = !rows.length
+        ? '<div style="text-align:center;padding:16px 10px;color:var(--text-dim);font-size:13px;border:1px dashed var(--border);border-radius:10px">📋 Sin asignaciones registradas para este equipo.</div>'
+        : (!shown.length ? '<div style="text-align:center;padding:16px 10px;color:var(--text-dim);font-size:13px;border:1px dashed var(--border);border-radius:10px">Sin asignación vigente.</div>' : '');
+      const toggle = past.length
+        ? `<button class="btn btn-ghost btn-sm" style="margin-top:6px" onclick="toggleAssignmentShowAll('${id}')">${_assignmentPanelShowAll ? '− Ocultar anteriores' : `+ Ver historial completo (${past.length} anterior${past.length !== 1 ? 'es' : ''})`}</button>`
+        : '';
+      list.innerHTML = table + empty + toggle;
       // Asignar/Devolver ya están disponibles seleccionando el equipo (checkbox)
       // y usando la barra de acciones de Inventario — no hace falta duplicarlos aquí.
     } catch (e) { list.innerHTML = '<div style="color:var(--red)">' + (e.message || 'Error') + '</div>'; }
