@@ -4332,7 +4332,7 @@ async function renderAgentDetail(id, panel) {
     el.innerHTML = '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">' +
       '<div style="font-weight:600">Historial de cambios</div>' +
       '<button class="btn btn-primary btn-sm" title="Registrar cambio / mantenimiento" onclick="openChangeHistory(\'' + id + '\')">+ Registrar cambio</button>' +
-      '</div><div id="inv-changes-' + id + '">Cargando…</div>';
+      '</div><div id="inv-changes-' + id + '" style="max-height:280px;overflow-y:auto">Cargando…</div>';
     const list = document.getElementById('inv-changes-' + id);
     try {
       const rows = await api(`/api/agents/${id}/changes`);
@@ -4357,7 +4357,7 @@ async function renderAgentDetail(id, panel) {
         </table>` : '<div style="text-align:center;padding:16px 10px;color:var(--text-dim);font-size:13px;border:1px dashed var(--border);border-radius:10px">🗒️ Sin cambios registrados para este equipo.</div>';
     } catch (e) { list.innerHTML = '<div style="color:var(--red)">' + (e.message || 'Error') + '</div>'; }
   } else {
-    el.innerHTML = '<div style="font-weight:600;margin-bottom:8px">Historial de asignaciones</div><div id="inv-assign-' + id + '">Cargando…</div>';
+    el.innerHTML = '<div style="font-weight:600;margin-bottom:8px">Historial de asignaciones</div><div id="inv-assign-' + id + '" style="max-height:280px;overflow-y:auto">Cargando…</div>';
     const list = document.getElementById('inv-assign-' + id);
     try {
       const rows = await api(`/api/agents/${id}/assignments`);
