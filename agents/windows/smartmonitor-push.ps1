@@ -194,23 +194,27 @@ function Set-CentralDns {
         # 'resolvectl dns *' en Linux. Si solo lo ponemos en la interfaz de la
         # ruta por defecto, Windows (resolucion multi-homed) manda consultas por
         # otra interfaz con su DNS de DHCP y esquiva el filtro -> no bloquea.
-        # Windows prioriza los DNS IPv6 (los del ISP, vía DHCPv6/RA) sobre el
-        # IPv4 que le pedimos usar, esquivando el filtro por completo — el
-        # server no tiene IPv6. En vez de deshabilitar IPv6 en el adaptador
-        # (corta conectividad IPv6 entera), se apunta el DNS IPv6 a ::1
-        # (loopback): como ahi no hay nada escuchando, esas consultas fallan
-        # al instante y Windows cae al DNS IPv4 (el que sí filtra) — IPv6
-        # sigue andando para todo lo demás.
         $adapters = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' })
         if ($adapters.Count -eq 0) {
             # Fallback a la ruta por defecto si no hay ninguna 'Up' detectable
             $idx = (Get-NetRoute -DestinationPrefix "0.0.0.0/0" -ErrorAction Stop |
                      Sort-Object RouteMetric | Select-Object -First 1).InterfaceIndex
-            if ($idx) { Set-DnsClientServerAddress -InterfaceIndex $idx -ServerAddresses @($ip, '::1') }
+            if ($idx) { Set-DnsClientServerAddress -InterfaceIndex $idx -ServerAddresses $ip }
         } else {
             foreach ($a in $adapters) {
-                try { Set-DnsClientServerAddress -InterfaceIndex $a.InterfaceIndex -ServerAddresses @($ip, '::1') -ErrorAction SilentlyContinue } catch {}
+                try { Set-DnsClientServerAddress -InterfaceIndex $a.InterfaceIndex -ServerAddresses $ip -ErrorAction SilentlyContinue } catch {}
             }
+        }
+        # Windows prioriza los DNS IPv6 (los del ISP, vía DHCPv6/RA) sobre el
+        # IPv4 que acabamos de fijar arriba, esquivando el filtro por
+        # completo — el server no escucha en IPv6. Mientras el bloqueo está
+        # activo se deshabilita el binding IPv6 del adaptador (se reactiva en
+        # Restore-Dns apenas deja de aplicar el horario/red).
+        foreach ($a in $adapters) {
+            try {
+                $b = Get-NetAdapterBinding -InterfaceIndex $a.InterfaceIndex -ComponentID ms_tcpip6 -ErrorAction SilentlyContinue
+                if ($b -and $b.Enabled) { Disable-NetAdapterBinding -InterfaceIndex $a.InterfaceIndex -ComponentID ms_tcpip6 -ErrorAction SilentlyContinue }
+            } catch {}
         }
         & ipconfig /flushdns | Out-Null
     } catch { Write-Log "WARN: no se pudo apuntar el DNS al server: $_" }
@@ -227,6 +231,12 @@ function Restore-Dns {
             foreach ($a in $adapters) {
                 try { Set-DnsClientServerAddress -InterfaceIndex $a.InterfaceIndex -ResetServerAddresses -ErrorAction SilentlyContinue } catch {}
             }
+        }
+        foreach ($a in $adapters) {
+            try {
+                $b = Get-NetAdapterBinding -InterfaceIndex $a.InterfaceIndex -ComponentID ms_tcpip6 -ErrorAction SilentlyContinue
+                if ($b -and -not $b.Enabled) { Enable-NetAdapterBinding -InterfaceIndex $a.InterfaceIndex -ComponentID ms_tcpip6 -ErrorAction SilentlyContinue }
+            } catch {}
         }
         & ipconfig /flushdns | Out-Null
     } catch {}
