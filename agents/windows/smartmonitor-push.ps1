@@ -205,17 +205,6 @@ function Set-CentralDns {
                 try { Set-DnsClientServerAddress -InterfaceIndex $a.InterfaceIndex -ServerAddresses $ip -ErrorAction SilentlyContinue } catch {}
             }
         }
-        # Windows prioriza los DNS IPv6 (los del ISP, vía DHCPv6/RA) sobre el
-        # IPv4 que acabamos de fijar arriba, esquivando el filtro por
-        # completo — el server no escucha en IPv6. Mientras el bloqueo está
-        # activo se deshabilita el binding IPv6 del adaptador (se reactiva en
-        # Restore-Dns apenas deja de aplicar el horario/red).
-        foreach ($a in $adapters) {
-            try {
-                $b = Get-NetAdapterBinding -InterfaceIndex $a.InterfaceIndex -ComponentID ms_tcpip6 -ErrorAction SilentlyContinue
-                if ($b -and $b.Enabled) { Disable-NetAdapterBinding -InterfaceIndex $a.InterfaceIndex -ComponentID ms_tcpip6 -ErrorAction SilentlyContinue }
-            } catch {}
-        }
         & ipconfig /flushdns | Out-Null
     } catch { Write-Log "WARN: no se pudo apuntar el DNS al server: $_" }
 }
@@ -231,12 +220,6 @@ function Restore-Dns {
             foreach ($a in $adapters) {
                 try { Set-DnsClientServerAddress -InterfaceIndex $a.InterfaceIndex -ResetServerAddresses -ErrorAction SilentlyContinue } catch {}
             }
-        }
-        foreach ($a in $adapters) {
-            try {
-                $b = Get-NetAdapterBinding -InterfaceIndex $a.InterfaceIndex -ComponentID ms_tcpip6 -ErrorAction SilentlyContinue
-                if ($b -and -not $b.Enabled) { Enable-NetAdapterBinding -InterfaceIndex $a.InterfaceIndex -ComponentID ms_tcpip6 -ErrorAction SilentlyContinue }
-            } catch {}
         }
         & ipconfig /flushdns | Out-Null
     } catch {}
