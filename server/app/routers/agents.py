@@ -325,6 +325,9 @@ def list_agents(user = Depends(require_permission("dashboard", "view")), db: Ses
             "returned_at": a.returned_at.isoformat() if a.returned_at else None,
             "assignment_notes": a.assignment_notes,
             "return_notes": a.return_notes,
+            "review_status": a.review_status,
+            "purchase_date": a.purchase_date.isoformat() if a.purchase_date else None,
+            "invoice_number": a.invoice_number,
             "cpu_percent": last_metric.cpu_percent if last_metric else 0,
             "ram_percent": last_metric.ram_percent if last_metric else 0,
             "ram_used_gb": last_metric.ram_used_gb if last_metric else 0,
@@ -399,6 +402,9 @@ async def stream_agents(
                     "returned_at": a.returned_at.isoformat() if a.returned_at else None,
                     "assignment_notes": a.assignment_notes,
                     "return_notes": a.return_notes,
+                    "review_status": a.review_status,
+            "purchase_date": a.purchase_date.isoformat() if a.purchase_date else None,
+            "invoice_number": a.invoice_number,
                 })
             result.sort(key=lambda x: (x["status"] != "online", -(x["cpu_percent"] or 0)))
 
@@ -529,6 +535,9 @@ def get_agent(agent_id: str, user = Depends(require_permission("inventory", "vie
         "returned_at": a.returned_at.isoformat() if a.returned_at else None,
         "assignment_notes": a.assignment_notes,
         "return_notes": a.return_notes,
+        "review_status": a.review_status,
+            "purchase_date": a.purchase_date.isoformat() if a.purchase_date else None,
+            "invoice_number": a.invoice_number,
         "first_seen": a.first_seen.isoformat() if a.first_seen else None,
         "last_seen": a.last_seen.isoformat() if a.last_seen else None,
         "disks": [{"device": d.device, "mountpoint": d.mountpoint,
@@ -562,6 +571,39 @@ def update_agent(agent_id: str, data: dict, user = Depends(require_permission("i
         a.assignment_notes = data["assignment_notes"] or None
     if "return_notes" in data:
         a.return_notes = data["return_notes"] or None
+    if "purchase_date" in data:
+        a.purchase_date = _parse_date(data.get("purchase_date"))
+    if "invoice_number" in data:
+        a.invoice_number = (data.get("invoice_number") or "").strip() or None
+    db.commit()
+    return {"ok": True}
+
+# ── Estado del equipo en Inventario (Disponible/Asignado se derivan solos;  ─
+#    En observación/Baja son manuales) ───────────────────────────────────────
+@router.put("/{agent_id}/review-status")
+def set_review_status(agent_id: str, data: dict, user = Depends(require_permission("inventory", "edit")), db: Session = Depends(get_db)):
+    a = db.query(Agent).filter(Agent.id == agent_id).first()
+    if not a:
+        raise HTTPException(404, "Agente no encontrado")
+    status = data.get("status") or None
+    if status not in (None, "en_observacion", "baja"):
+        raise HTTPException(400, "Estado no válido.")
+    if status == "baja":
+        # Dar de baja un equipo con una asignación abierta la cierra sola —
+        # un equipo dado de baja no puede seguir figurando como "asignado".
+        latest = db.query(AssignmentLog).filter(AssignmentLog.agent_id == agent_id)\
+                    .order_by(desc(AssignmentLog.assigned_at), desc(AssignmentLog.created_at)).first()
+        if latest and (latest.assigned_to or latest.assigned_to_name) and not latest.returned_at:
+            today = datetime.utcnow().date()
+            latest.returned_at = today
+            latest.return_notes = (latest.return_notes + " — Dado de baja") if latest.return_notes else "Dado de baja"
+            latest.changed_by = (user.name or user.email if user else None)
+            a.assigned_user    = latest.assigned_to
+            a.assigned_at       = latest.assigned_at
+            a.assignment_notes = latest.delivery_notes
+            a.returned_at      = latest.returned_at
+            a.return_notes     = latest.return_notes
+    a.review_status = status
     db.commit()
     return {"ok": True}
 
@@ -625,6 +667,10 @@ def add_agent_change(agent_id: str, data: dict, user = Depends(require_permissio
         change_date=cd,
         changed_by=(user.name or user.email if user else None),
     ))
+    # Registrar un cambio/mantenimiento pone el equipo "en observación"
+    # automáticamente — salvo que ya esté dado de baja, que no se debe pisar.
+    if a.review_status != "baja":
+        a.review_status = "en_observacion"
     db.commit()
     return {"ok": True}
 

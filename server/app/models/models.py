@@ -106,6 +106,13 @@ class Agent(Base):
     returned_at      = Column(Date, nullable=True)       # fecha de devolución
     assignment_notes = Column(Text, nullable=True)       # observaciones al asignar
     return_notes     = Column(Text, nullable=True)       # observaciones al devolver
+    # None = estado normal (Asignado/Disponible se derivan solos de assigned_user/
+    # returned_at); "en_observacion" | "baja" son estados manuales que pisan esa
+    # derivación para mostrar en Inventario. "en_observacion" también se activa
+    # solo al registrar un cambio en el historial de mantenimiento.
+    review_status    = Column(String, nullable=True)
+    purchase_date    = Column(Date, nullable=True)        # fecha de compra
+    invoice_number   = Column(String, nullable=True)      # número de factura
     sede            = relationship("Sede", back_populates="agents")
     metrics         = relationship("Metric", back_populates="agent", cascade="all, delete-orphan")
     disks           = relationship("Disk", back_populates="agent", cascade="all, delete-orphan")

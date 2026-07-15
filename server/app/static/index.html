@@ -137,6 +137,11 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);min-height:1
 .badge.technician{background:rgba(59,130,246,.15);color:var(--accent)}
 .badge.active{background:rgba(16,185,129,.15);color:var(--green)}
 .badge.inactive{background:rgba(239,68,68,.15);color:var(--red)}
+.badge.disponible{background:rgba(16,185,129,.15);color:var(--green)}
+.badge.asignado{background:rgba(59,130,246,.15);color:var(--accent)}
+.badge.observacion{background:rgba(245,158,11,.15);color:var(--yellow)}
+.badge.baja{background:rgba(148,163,184,.18);color:var(--text-dim)}
+.badge.clickable{cursor:pointer}
 /* ── Metric bars ── */
 .metrics{display:flex;flex-direction:column;gap:10px}
 .metric-row{display:flex;flex-direction:column;gap:5px}
@@ -631,7 +636,9 @@ canvas.spark{width:100%;height:80px}
             <th style="text-align:right">RAM %</th>
             <th style="text-align:right">Disco %</th>
             <th style="text-align:right">Temp</th>
-            <th>Área</th><th>Tipo</th><th>Estado</th><th style="width:40px"></th>
+            <th>Área</th><th>Tipo</th><th>Estado</th>
+            <th>Usuario</th><th>Estado equipo</th><th>Fecha compra</th><th>N° Factura</th>
+            <th style="width:60px"></th>
           </tr></thead>
           <tbody id="inventory-body"></tbody>
         </table>
@@ -1583,6 +1590,10 @@ canvas.spark{width:100%;height:80px}
         <button class="btn btn-primary btn-sm" type="button" onclick="openDeviceTypesModal()" title="Agregar más tipos de dispositivo" style="font-size:20px;font-weight:900;line-height:1;padding:4px 10px">+</button>
       </div>
     </div>
+    <div class="form-grid">
+      <div class="form-group"><label class="form-label">Fecha de compra</label><input class="form-input" id="agent-purchase-date" type="date"></div>
+      <div class="form-group"><label class="form-label">N° Factura</label><input class="form-input" id="agent-invoice-number" type="text" placeholder="Ej: F-001-00012345"></div>
+    </div>
     <div class="modal-footer">
       <button class="btn btn-ghost" onclick="closeModal('modal-agent')">Cancelar</button>
       <button class="btn btn-primary" onclick="saveAgent()">Guardar</button>
@@ -1616,6 +1627,24 @@ canvas.spark{width:100%;height:80px}
     <div class="modal-footer">
       <button class="btn btn-ghost" onclick="closeModal('modal-assignment')">Cancelar</button>
       <button class="btn btn-primary" onclick="saveAssignment()">Guardar</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-review-status">
+  <div class="modal" style="max-width:420px">
+    <div class="modal-title">Estado del equipo</div>
+    <div class="form-group"><label class="form-label">Estado</label>
+      <select class="form-input" id="rs-select">
+        <option value="">Normal (Asignado/Disponible automático)</option>
+        <option value="en_observacion">En observación</option>
+        <option value="baja">Baja</option>
+      </select>
+    </div>
+    <div id="rs-hint" style="font-size:12px;color:var(--text-dim);margin-top:-6px;margin-bottom:10px"></div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('modal-review-status')">Cancelar</button>
+      <button class="btn btn-primary" onclick="saveReviewStatus()">Guardar</button>
     </div>
   </div>
 </div>
@@ -2407,7 +2436,9 @@ function renderInventory() {
   // datos relevantes son idénticos a la última vez, no se toca el DOM.
   const sig = JSON.stringify(filtered.map(a => [a.id, a.display_name, a.hostname, a.manufacturer, a.model,
     a.serial_number, a.os, a.cpu_model, a.cpu_cores, a.ram_total_gb, a.cpu_percent, a.ram_percent,
-    a.disk_percent, a.cpu_temp, a.sede, a.device_type, a.status])) + '|' + [...selectedAgentIds].sort().join(',');
+    a.disk_percent, a.cpu_temp, a.sede, a.device_type, a.status,
+    a.assigned_user_name, a.returned_at, a.review_status, a.purchase_date, a.invoice_number]))
+    + '|' + [...selectedAgentIds].sort().join(',');
   if (sig === _lastInventorySig) {
     updateInventorySelectionBar();
     return;
@@ -2435,13 +2466,17 @@ function renderInventory() {
     <td>${a.sede||'--'}</td><!-- área -->
     <td style="text-align:center;font-size:18px" title="${a.device_type||'Sin tipo'}">${deviceTypeIcon(a.device_type)}</td>
     <td><span class="badge ${a.status}">${a.status==='online'?'Online':'Offline'}</span></td>
+    <td>${a.assigned_user_name || '--'}</td>
+    <td onclick="event.stopPropagation()">${(() => { const rs = reviewStatusInfo(a); return `<span class="badge ${rs.cls} clickable" title="Cambiar estado" onclick="openReviewStatusModal('${a.id}')">${rs.label}</span>`; })()}</td>
+    <td style="white-space:nowrap">${a.purchase_date || '--'}</td>
+    <td style="white-space:nowrap">${a.invoice_number || '--'}</td>
     <td style="text-align:center;white-space:nowrap" onclick="event.stopPropagation()">
       <button class="btn btn-ghost" title="Historial de asignaciones" style="padding:2px 7px;font-size:14px;line-height:1" onclick="toggleAgentDetail('${a.id}','assignment')">👤</button>
       <button class="btn btn-ghost" title="Historial de cambios" style="padding:2px 7px;font-size:14px;line-height:1" onclick="toggleAgentDetail('${a.id}','changes')">🕑</button>
     </td>
   </tr>
   <tr id="inv-detail-${a.id}" style="display:none">
-    <td colspan="16" style="padding:0;background:var(--surface)">
+    <td colspan="20" style="padding:0;background:var(--surface)">
       <div id="inv-detail-content-${a.id}" style="padding:14px 18px"></div>
     </td>
   </tr>`).join('');
@@ -4105,6 +4140,8 @@ function openEditAgent() {
   document.getElementById('agent-display-name').value  = a.display_name || a.hostname;
   document.getElementById('agent-sede-select').value  = a.sede_id || '';
   document.getElementById('agent-notes').value        = a.notes || '';
+  document.getElementById('agent-purchase-date').value  = a.purchase_date || '';
+  document.getElementById('agent-invoice-number').value = a.invoice_number || '';
   const dtSel = document.getElementById('agent-device-type');
   dtSel.innerHTML = deviceTypeNames().map(t => `<option value="${t}">${t}</option>`).join('');
   dtSel.value = a.device_type || '';
@@ -4118,6 +4155,8 @@ async function saveAgent() {
     sede_id:      document.getElementById('agent-sede-select').value || null,
     notes:        document.getElementById('agent-notes').value,
     device_type:  document.getElementById('agent-device-type').value || null,
+    purchase_date:  document.getElementById('agent-purchase-date').value || null,
+    invoice_number: document.getElementById('agent-invoice-number').value || null,
   };
   await api(`/api/agents/${currentAgentId}`, {method:'PUT', body: JSON.stringify(body)});
   closeModal('modal-agent');
@@ -4163,6 +4202,15 @@ function deviceTypeIcon(t) {
   return DEVICE_ICON_KEYS[icon] || ICON_OTHER;
 }
 const CHANGE_FIELD_LABEL = { RAM:'RAM', 'Batería':'Batería', Fuente:'Fuente de poder', Disco:'Disco', Otro:'Otro' };
+
+// Disponible/Asignado se derivan solos (según haya o no una asignación
+// abierta); En observación/Baja son estados manuales que pisan esa derivación.
+function reviewStatusInfo(a) {
+  if (a.review_status === 'baja') return {label:'Baja', cls:'baja'};
+  if (a.review_status === 'en_observacion') return {label:'En observación', cls:'observacion'};
+  if (a.assigned_user && !a.returned_at) return {label:'Asignado', cls:'asignado'};
+  return {label:'Disponible', cls:'disponible'};
+}
 let _changeAgentId = null;
 let _changeEditRecordId = null; // id del registro en edición (null = registrando uno nuevo)
 
@@ -4480,6 +4528,37 @@ async function saveAssignment() {
     const fresh = allAgents.find(a => a.id === id);
     if (fresh) updateDetailMetrics(fresh);
   } catch (e) { alert(e.message || 'No se pudo guardar la asignación.'); }
+}
+
+let _reviewStatusAgentId = null;
+function openReviewStatusModal(id) {
+  const a = allAgents.find(x => x.id === id);
+  if (!a) return;
+  _reviewStatusAgentId = id;
+  document.getElementById('rs-select').value = a.review_status || '';
+  updateReviewStatusHint();
+  openModal('modal-review-status');
+}
+
+function updateReviewStatusHint() {
+  const a = allAgents.find(x => x.id === _reviewStatusAgentId);
+  const val = document.getElementById('rs-select').value;
+  const hint = document.getElementById('rs-hint');
+  const isAssigned = a && a.assigned_user && !a.returned_at;
+  hint.textContent = (val === 'baja' && isAssigned)
+    ? 'Este equipo está asignado actualmente — al darlo de baja se cerrará esa asignación automáticamente (devolución de hoy).'
+    : '';
+}
+document.getElementById('rs-select') && document.getElementById('rs-select').addEventListener('change', updateReviewStatusHint);
+
+async function saveReviewStatus() {
+  const id = _reviewStatusAgentId;
+  if (!id) return;
+  try {
+    await api(`/api/agents/${id}/review-status`, {method:'PUT', body: { status: document.getElementById('rs-select').value || null }});
+    closeModal('modal-review-status');
+    await fetchAgents();
+  } catch (e) { alert(e.message || 'No se pudo actualizar el estado del equipo.'); }
 }
 
 function openModal(id) { document.getElementById(id).classList.add('open'); }

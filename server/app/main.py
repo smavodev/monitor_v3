@@ -50,6 +50,9 @@ def startup():
         "ALTER TABLE agents ADD COLUMN IF NOT EXISTS returned_at DATE",
         "ALTER TABLE agents ADD COLUMN IF NOT EXISTS assignment_notes TEXT",
         "ALTER TABLE agents ADD COLUMN IF NOT EXISTS return_notes TEXT",
+        "ALTER TABLE agents ADD COLUMN IF NOT EXISTS review_status VARCHAR",
+        "ALTER TABLE agents ADD COLUMN IF NOT EXISTS purchase_date DATE",
+        "ALTER TABLE agents ADD COLUMN IF NOT EXISTS invoice_number VARCHAR",
         # Antes no tenía ON DELETE SET NULL: borrar un usuario que seguía
         # asignado a algún equipo tumbaba con 500 (ForeignKeyViolation) en vez
         # de simplemente desasignarlo.
