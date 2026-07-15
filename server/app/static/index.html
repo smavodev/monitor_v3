@@ -2415,12 +2415,7 @@ function renderInventory() {
       <input type="checkbox" data-id="${a.id}" onchange="toggleAgentSelect('${a.id}', this.checked)" ${selectedAgentIds.has(a.id) ? 'checked' : ''}>
     </td>
     <td>
-      <div style="display:flex;align-items:center;gap:6px;position:relative">
-        <div><strong>${a.display_name||a.hostname}</strong><br><span style="font-size:11px;color:var(--text-dim)">${a.hostname}</span></div>
-        <div onclick="event.stopPropagation()">
-          <button class="btn btn-ghost" title="Historial de asignaciones" style="padding:2px 7px;font-size:14px;line-height:1" onclick="toggleAgentDetail('${a.id}','assignment')">📋</button>
-        </div>
-      </div>
+      <div><strong>${a.display_name||a.hostname}</strong><br><span style="font-size:11px;color:var(--text-dim)">${a.hostname}</span></div>
     </td>
     <td>${a.manufacturer||'--'}</td>
     <td>${a.model||'--'}</td>
@@ -2435,7 +2430,8 @@ function renderInventory() {
     <td>${a.sede||'--'}</td><!-- área -->
     <td style="text-align:center;font-size:18px" title="${a.device_type||'Sin tipo'}">${deviceTypeIcon(a.device_type)}</td>
     <td><span class="badge ${a.status}">${a.status==='online'?'Online':'Offline'}</span></td>
-    <td style="text-align:center" onclick="event.stopPropagation()">
+    <td style="text-align:center;white-space:nowrap" onclick="event.stopPropagation()">
+      <button class="btn btn-ghost" title="Historial de asignaciones" style="padding:2px 7px;font-size:14px;line-height:1" onclick="toggleAgentDetail('${a.id}','assignment')">👤</button>
       <button class="btn btn-ghost" title="Historial de cambios" style="padding:2px 7px;font-size:14px;line-height:1" onclick="toggleAgentDetail('${a.id}','changes')">🕑</button>
     </td>
   </tr>
@@ -4354,7 +4350,7 @@ async function renderAgentDetail(id, panel) {
               </tr>`;
             }).join('')}
           </tbody>
-        </table>` : '<div style="color:var(--text-dim);font-size:13px">Sin cambios registrados.</div>';
+        </table>` : '<div style="text-align:center;padding:16px 10px;color:var(--text-dim);font-size:13px;border:1px dashed var(--border);border-radius:10px">🗒️ Sin cambios registrados para este equipo.</div>';
     } catch (e) { list.innerHTML = '<div style="color:var(--red)">' + (e.message || 'Error') + '</div>'; }
   } else {
     el.innerHTML = '<div style="font-weight:600;margin-bottom:8px">Historial de asignaciones</div><div id="inv-assign-' + id + '">Cargando…</div>';
@@ -4384,7 +4380,7 @@ async function renderAgentDetail(id, panel) {
         cards.slice(0, ASSIGN_PAGE).join('') +
         (extra > 0 ? `<div id="inv-assign-more-${id}" style="display:none">${cards.slice(ASSIGN_PAGE).join('')}</div>
           <button class="btn btn-ghost btn-sm" id="inv-assign-toggle-${id}" style="margin-top:4px" onclick="toggleAssignmentMore('${id}', ${extra})">+ Ver ${extra} más</button>` : '')
-      ) : '<div style="color:var(--text-dim);font-size:13px">Sin asignaciones registradas.</div>';
+      ) : '<div style="text-align:center;padding:16px 10px;color:var(--text-dim);font-size:13px;border:1px dashed var(--border);border-radius:10px">📋 Sin asignaciones registradas para este equipo.</div>';
       // "Devolver" solo tiene sentido si la asignación más reciente sigue abierta
       // (tiene a quién se le entregó y todavía no se registró devolución).
       const openRec = rows && rows[0] && (rows[0].assigned_to || rows[0].assigned_to_name) && !rows[0].returned_at ? rows[0] : null;
