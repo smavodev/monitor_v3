@@ -1,5 +1,5 @@
 # SmartMonitor v3 - Agente Windows (loop continuo, modo DNS centralizado)
-$SERVER       = "http://52.73.185.45:8000"
+$SERVER       = "http://__SMARTMONITOR_SERVER_IP__:8000"
 $HOSTNAME_PC  = $env:COMPUTERNAME
 $SW_HASH_FILE = "C:\SmartMonitor\.sw_hash"
 $LOG_FILE     = "C:\SmartMonitor\agent.log"

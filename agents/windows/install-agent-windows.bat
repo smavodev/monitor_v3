@@ -64,17 +64,19 @@ copy /Y "%PS_SRC%" "%PS_DEST%" >nul
 echo [OK] Agente copiado a %PS_DEST%
 
 REM Inyectar la IP/dominio del servidor en el script copiado (igual que el
-REM instalador de Linux hace con sed): reemplazo literal de la IP por defecto
-REM en todas sus apariciones (linea de $SERVER y la de espera de red), asi
-REM se evita lidiar con comillas anidadas entre cmd y PowerShell.
-REM OJO: el placeholder tiene que ser el que el .ps1 fuente trae hardcodeado
-REM ahora mismo (52.73.185.45) — si queda desactualizado (como paso con la
-REM IP vieja 172.27.142.107, que ya no aparecia en el archivo), este
-REM reemplazo no encuentra nada y el mensaje "[OK] Servidor configurado"
-REM miente: el .ps1 se queda con el server hardcodeado sin importar que
-REM SERVER_IP se le pase al instalador.
-powershell -ExecutionPolicy Bypass -Command "(Get-Content -Raw '%PS_DEST%').Replace('52.73.185.45', '%SERVER_IP%') | Set-Content -Path '%PS_DEST%' -Encoding UTF8"
-echo [OK] Servidor configurado: http://%SERVER_IP%:8000
+REM instalador de Linux hace con sed). El .ps1 fuente trae un placeholder
+REM fijo (__SMARTMONITOR_SERVER_IP__, no una IP real) que se reemplaza aca
+REM por el SERVER_IP recibido — asi este reemplazo no se vuelve a romper el
+REM dia que cambie el default (como paso antes: buscaba la IP vieja
+REM 172.27.142.107, que dejo de existir en el archivo cuando se hardcodeo
+REM una IP real, y el reemplazo pasaba a no hacer nada silenciosamente).
+powershell -ExecutionPolicy Bypass -Command "(Get-Content -Raw '%PS_DEST%').Replace('__SMARTMONITOR_SERVER_IP__', '%SERVER_IP%') | Set-Content -Path '%PS_DEST%' -Encoding UTF8"
+findstr /C:"__SMARTMONITOR_SERVER_IP__" "%PS_DEST%" >nul 2>&1
+if %errorlevel% equ 0 (
+    echo [ERROR] El reemplazo del servidor NO se aplico - %PS_DEST% todavia tiene el placeholder sin resolver.
+) else (
+    echo [OK] Servidor configurado: http://%SERVER_IP%:8000
+)
 
 REM Ocultar carpeta
 attrib +H "%INSTALL_DIR%" >nul 2>&1
