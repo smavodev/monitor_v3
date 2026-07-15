@@ -4305,7 +4305,11 @@ function collapseAgentDetail() {
 
 function toggleAgentDetail(id, panel) {
   if (expandedAgentId === id && expandedPanel === panel) { collapseAgentDetail(); return; }
-  document.querySelectorAll('[id^="inv-detail-"]').forEach(r => r.style.display = 'none');
+  // OJO: scoped a "tr" — un selector genérico [id^="inv-detail-"] también
+  // matchea los divs "inv-detail-content-*" (empiezan con el mismo prefijo)
+  // y los dejaba con display:none aunque la fila sí se mostrara, por lo que
+  // el panel parecía "no desplegar" nada pese a tener contenido cargado.
+  document.querySelectorAll('tr[id^="inv-detail-"]').forEach(r => r.style.display = 'none');
   expandedAgentId = id; expandedPanel = panel;
   const row = document.getElementById('inv-detail-' + id);
   if (row) row.style.display = '';
@@ -4358,28 +4362,29 @@ async function renderAgentDetail(id, panel) {
     try {
       const rows = await api(`/api/agents/${id}/assignments`);
       const ASSIGN_PAGE = 3;
-      const cards = (rows || []).map(r => {
+      const trs = (rows || []).map(r => {
         const name = r.assigned_to_name || (r.assigned_to ? 'ID ' + r.assigned_to : '—');
         const del = `<button class="btn btn-ghost btn-sm" title="Eliminar" onclick="deleteAssignment('${id}',${r.id})">✕</button>`;
-        const dev = (r.returned_at || r.return_notes)
-          ? `<div style="font-size:12px;color:var(--text-dim);margin-top:2px"><b>Devolución:</b> ${r.returned_at || '—'}${r.return_notes ? ' — ' + r.return_notes : ''}</div>` : '';
+        const entrega = `${r.assigned_at || '—'}${r.delivery_notes ? `<div style="margin-top:2px">${r.delivery_notes}</div>` : ''}`;
+        const devolucion = (r.returned_at || r.return_notes)
+          ? `${r.returned_at || '—'}${r.return_notes ? `<div style="margin-top:2px">${r.return_notes}</div>` : ''}`
+          : '<span style="color:var(--text-dim)">—</span>';
         const by = r.changed_by ? `<div style="font-size:11px;color:var(--text-dim);margin-top:2px">por ${r.changed_by}</div>` : '';
-        return `<div style="padding:10px 0;border-bottom:1px solid var(--border)">
-          <div style="display:flex;justify-content:space-between;gap:8px;align-items:center">
-            <span style="font-weight:600;font-size:13px">${name}</span>
-            <span style="display:flex;gap:8px;align-items:center">
-              <span style="font-size:12px;color:var(--text-dim)">${r.assigned_at || ''}</span>${del}
-            </span>
-          </div>
-          ${r.delivery_notes ? `<div style="font-size:12px;color:var(--text-mid);margin-top:2px"><b>Entrega:</b> ${r.delivery_notes}</div>` : ''}
-          ${dev}${by}
-        </div>`;
+        return `<tr>
+          <td style="font-weight:600;white-space:nowrap">${name}${by}</td>
+          <td style="white-space:nowrap">${entrega}</td>
+          <td style="white-space:nowrap">${devolucion}</td>
+          <td style="text-align:right">${del}</td>
+        </tr>`;
       });
-      const extra = cards.length - ASSIGN_PAGE;
-      list.innerHTML = cards.length ? (
-        cards.slice(0, ASSIGN_PAGE).join('') +
-        (extra > 0 ? `<div id="inv-assign-more-${id}" style="display:none">${cards.slice(ASSIGN_PAGE).join('')}</div>
-          <button class="btn btn-ghost btn-sm" id="inv-assign-toggle-${id}" style="margin-top:4px" onclick="toggleAssignmentMore('${id}', ${extra})">+ Ver ${extra} más</button>` : '')
+      const extra = trs.length - ASSIGN_PAGE;
+      list.innerHTML = trs.length ? (
+        `<table class="data-table" style="width:100%;font-size:13px">
+          <thead><tr><th>Asignado a</th><th>Entrega</th><th>Devolución</th><th></th></tr></thead>
+          <tbody>${trs.slice(0, ASSIGN_PAGE).join('')}</tbody>
+          ${extra > 0 ? `<tbody id="inv-assign-more-${id}" style="display:none">${trs.slice(ASSIGN_PAGE).join('')}</tbody>` : ''}
+        </table>` +
+        (extra > 0 ? `<button class="btn btn-ghost btn-sm" id="inv-assign-toggle-${id}" style="margin-top:4px" onclick="toggleAssignmentMore('${id}', ${extra})">+ Ver ${extra} más</button>` : '')
       ) : '<div style="text-align:center;padding:16px 10px;color:var(--text-dim);font-size:13px;border:1px dashed var(--border);border-radius:10px">📋 Sin asignaciones registradas para este equipo.</div>';
       // "Devolver" solo tiene sentido si la asignación más reciente sigue abierta
       // (tiene a quién se le entregó y todavía no se registró devolución).
