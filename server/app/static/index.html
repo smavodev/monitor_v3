@@ -631,7 +631,7 @@ canvas.spark{width:100%;height:80px}
             <th style="text-align:right">RAM %</th>
             <th style="text-align:right">Disco %</th>
             <th style="text-align:right">Temp</th>
-            <th>Área</th><th>Tipo</th><th>Estado</th>
+            <th>Área</th><th>Tipo</th><th>Estado</th><th style="width:40px"></th>
           </tr></thead>
           <tbody id="inventory-body"></tbody>
         </table>
@@ -2435,9 +2435,12 @@ function renderInventory() {
     <td>${a.sede||'--'}</td><!-- área -->
     <td style="text-align:center;font-size:18px" title="${a.device_type||'Sin tipo'}">${deviceTypeIcon(a.device_type)}</td>
     <td><span class="badge ${a.status}">${a.status==='online'?'Online':'Offline'}</span></td>
+    <td style="text-align:center" onclick="event.stopPropagation()">
+      <button class="btn btn-ghost" title="Historial de cambios" style="padding:2px 7px;font-size:14px;line-height:1" onclick="toggleAgentDetail('${a.id}','changes')">🕑</button>
+    </td>
   </tr>
   <tr id="inv-detail-${a.id}" style="display:none">
-    <td colspan="15" style="padding:0;background:var(--surface)">
+    <td colspan="16" style="padding:0;background:var(--surface)">
       <div id="inv-detail-content-${a.id}" style="padding:14px 18px"></div>
     </td>
   </tr>`).join('');
@@ -4389,7 +4392,6 @@ async function renderAgentDetail(id, panel) {
         '<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">' +
         '<button class="btn btn-primary btn-sm" onclick="openAssignModal(\'' + id + '\')">Asignar</button>' +
         (openRec ? '<button class="btn btn-ghost btn-sm" onclick="openReturnModal(\'' + id + '\',' + openRec.id + ')">Devolver</button>' : '') +
-        '<button class="btn btn-ghost btn-sm" onclick="toggleAgentDetail(\'' + id + '\',\'changes\')">🕑 Historial de cambios de piezas / reparaciones</button>' +
         '</div>');
     } catch (e) { list.innerHTML = '<div style="color:var(--red)">' + (e.message || 'Error') + '</div>'; }
   }
