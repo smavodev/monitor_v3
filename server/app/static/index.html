@@ -2493,12 +2493,18 @@ function renderInventory() {
     <td style="text-align:center" onclick="event.stopPropagation()">
       <input type="checkbox" data-id="${a.id}" onchange="toggleAgentSelect('${a.id}', this.checked)" ${selectedAgentIds.has(a.id) ? 'checked' : ''}>
     </td>
-    <td>${a.assigned_user_name || '--'}${(() => {
-      if (!_invFilterUserAssignments) return '';
-      const rec = _invFilterUserAssignments.get(a.id);
-      if (!rec) return '';
-      const range = rec.returned_at ? `${rec.assigned_at||'—'} – ${rec.returned_at}` : `desde ${rec.assigned_at||'—'} (vigente)`;
-      return `<div style="font-size:11px;color:var(--text-dim);margin-top:2px">${range}</div>`;
+    <td>${(() => {
+      // Filtrando por usuario: mostrar SIEMPRE el nombre de esa persona (con
+      // el rango de fechas), aunque ya no sea la asignación vigente del
+      // equipo — si no, quedaba en blanco al ser una asignación devuelta.
+      if (_invFilterUserAssignments) {
+        const rec = _invFilterUserAssignments.get(a.id);
+        if (rec) {
+          const range = rec.returned_at ? `${rec.assigned_at||'—'} – ${rec.returned_at}` : `desde ${rec.assigned_at||'—'} (vigente)`;
+          return `${rec.assigned_to_name || '--'}<div style="font-size:11px;color:var(--text-dim);margin-top:2px">${range}</div>`;
+        }
+      }
+      return a.assigned_user_name || '--';
     })()}</td>
     <td onclick="event.stopPropagation()">${(() => { const rs = reviewStatusInfo(a); return `<span class="badge ${rs.cls} clickable" title="Cambiar estado" onclick="openReviewStatusModal('${a.id}')">${rs.label}</span>`; })()}</td>
     <td style="white-space:nowrap">${a.purchase_date || '--'}</td>

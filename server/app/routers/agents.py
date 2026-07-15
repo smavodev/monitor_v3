@@ -745,6 +745,7 @@ def get_assignments_by_user(user_id: str, user = Depends(require_permission("inv
         "agent_id": r.agent_id,
         "hostname": agents[r.agent_id].hostname if r.agent_id in agents else None,
         "display_name": (agents[r.agent_id].display_name or agents[r.agent_id].hostname) if r.agent_id in agents else "(equipo eliminado)",
+        "assigned_to_name": r.assigned_to_name,
         "assigned_at": r.assigned_at.isoformat() if r.assigned_at else None,
         "delivery_notes": r.delivery_notes,
         "returned_at": r.returned_at.isoformat() if r.returned_at else None,
