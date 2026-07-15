@@ -2455,6 +2455,16 @@ function renderInventory() {
     }
     return true;
   });
+  if (userId && _invFilterUserAssignments) {
+    // El equipo vigente de la persona siempre va primero; los anteriores
+    // detrás, del más reciente al más antiguo.
+    filtered.sort((x, y) => {
+      const rx = _invFilterUserAssignments.get(x.id), ry = _invFilterUserAssignments.get(y.id);
+      const vx = rx && !rx.returned_at, vy = ry && !ry.returned_at;
+      if (vx !== vy) return vx ? -1 : 1;
+      return (ry?.assigned_at || '').localeCompare(rx?.assigned_at || '');
+    });
+  }
 
   const info = document.getElementById('inv-results-info');
   if (info) info.textContent = `${filtered.length} de ${allAgents.length} equipos`;
