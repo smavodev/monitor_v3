@@ -173,8 +173,13 @@ function Get-BlockList {
     try {
         $ssid = Get-WifiSSID
         $ssidParam = if ($ssid) { [uri]::EscapeDataString($ssid) } else { "" }
+        # El hostname de Windows puede repetirse entre equipos distintos
+        # (clonación, error humano); mandar el serial deja que el server
+        # identifique a este equipo sin ambigüedad si hay otro con el mismo
+        # nombre (ver receive_metrics/get_blocklist en el server).
+        $serialParam = if ($hw -and $hw.serial_number) { [uri]::EscapeDataString($hw.serial_number) } else { "" }
         Write-Log "BLOCKLIST consultando (hostname=$HOSTNAME_PC ssid='$ssid')"
-        $r = Invoke-RestMethod -Uri "$SERVER/api/agents/blocklist?hostname=$HOSTNAME_PC&ssid=$ssidParam" -Method GET -TimeoutSec 5
+        $r = Invoke-RestMethod -Uri "$SERVER/api/agents/blocklist?hostname=$HOSTNAME_PC&ssid=$ssidParam&serial=$serialParam" -Method GET -TimeoutSec 5
         $allDomains = @($r.all_domains)
         $shouldBlock = [bool]($r.should_block -ne $false)
         return @{ AllDomains = $allDomains; ShouldBlock = $shouldBlock }

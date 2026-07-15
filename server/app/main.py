@@ -46,6 +46,12 @@ def startup():
         "ALTER TABLE agents ADD COLUMN IF NOT EXISTS device_type_manual BOOLEAN DEFAULT FALSE",
         "ALTER TABLE agents ADD COLUMN IF NOT EXISTS display_name_manual BOOLEAN DEFAULT FALSE",
         "CREATE UNIQUE INDEX IF NOT EXISTS ix_agents_serial_number ON agents (serial_number)",
+        # El hostname de Windows puede repetirse entre equipos distintos
+        # (clonación, error humano); la identidad única real es
+        # serial_number (índice de arriba). Se quita el UNIQUE de hostname
+        # para poder registrar ambos equipos como filas separadas.
+        "DROP INDEX IF EXISTS ix_agents_hostname",
+        "CREATE INDEX IF NOT EXISTS ix_agents_hostname ON agents (hostname)",
         "ALTER TABLE agents ADD COLUMN IF NOT EXISTS assigned_at DATE",
         "ALTER TABLE agents ADD COLUMN IF NOT EXISTS returned_at DATE",
         "ALTER TABLE agents ADD COLUMN IF NOT EXISTS assignment_notes TEXT",

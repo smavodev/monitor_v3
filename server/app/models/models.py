@@ -77,7 +77,10 @@ class Sede(Base):
 class Agent(Base):
     __tablename__ = "agents"
     id              = Column(String, primary_key=True, default=gen_uuid)
-    hostname        = Column(String, unique=True, nullable=False, index=True)
+    # No unique: dos equipos físicos distintos pueden terminar con el mismo
+    # hostname de Windows (clonación, error humano al nombrarlos). La
+    # identidad real y única del equipo es serial_number (ver más abajo).
+    hostname        = Column(String, nullable=False, index=True)
     ip              = Column(String, nullable=True, index=True)
     display_name    = Column(String)
     display_name_manual = Column(Boolean, default=False)

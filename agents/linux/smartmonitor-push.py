@@ -32,8 +32,12 @@ def get_wifi_ssid():
 def get_blocklist():
     try:
         ssid = urllib.parse.quote(get_wifi_ssid() or "")
+        # El hostname puede repetirse entre equipos distintos (clonación,
+        # error humano); mandar el serial deja que el server identifique a
+        # este equipo sin ambigüedad si hay otro con el mismo nombre.
+        serial = urllib.parse.quote(hw.get("serial_number", "") or "")
         r = urllib.request.urlopen(
-            f"{SERVER}/api/agents/blocklist?hostname={HOSTNAME}&ssid={ssid}", timeout=5)
+            f"{SERVER}/api/agents/blocklist?hostname={HOSTNAME}&ssid={ssid}&serial={serial}", timeout=5)
         j = json.loads(r.read())
         all_domains = j.get("all_domains", [])
         should_block = j.get("should_block", True)

@@ -2055,7 +2055,10 @@ function stopOfflineLiveTick() {
 // Genera el HTML de un item de alerta; para offline muestra tiempo en vivo.
 function alertLiveText(al) {
   if (al.type === 'offline') {
-    const ag = (allAgents || []).find(x => x.id === al.id || x.hostname === al.hostname);
+    // Solo por id: el hostname puede repetirse entre equipos distintos, así
+    // que emparejar por nombre podría mostrar el tiempo "sin conexión" de
+    // OTRO equipo con el mismo nombre.
+    const ag = (allAgents || []).find(x => x.id === al.id);
     if (ag && ag.last_seen_ago != null) return `Sin conexión ${fmtAgoLive(ag.last_seen_ago + _offlineTick)}`;
   }
   return al.detail;

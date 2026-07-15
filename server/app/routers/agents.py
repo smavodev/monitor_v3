@@ -150,18 +150,34 @@ class MetricPayload(BaseModel):
 def receive_metrics(payload: MetricPayload, request: Request, db: Session = Depends(get_db)):
     now = datetime.utcnow()
 
-    # Buscar o crear agente: el serial_number es la identidad persistente.
+    # Buscar o crear agente: el serial_number es la identidad persistente (es
+    # lo único con UNIQUE real en la tabla). El hostname NO se usa como
+    # primera búsqueda: dos equipos físicos distintos pueden compartir el
+    # mismo nombre de Windows (clonación, error humano al nombrarlos), y
+    # buscar primero por hostname mezclaba sus datos en una sola fila.
     found_by_serial = False
-    agent = db.query(Agent).filter(Agent.hostname == payload.hostname).first()
-    if not agent and payload.serial_number:
+    agent = None
+    if payload.serial_number:
         agent = db.query(Agent).filter(Agent.serial_number == payload.serial_number).first()
-        if agent:
+        if agent and agent.hostname != payload.hostname:
             agent.hostname = payload.hostname
             found_by_serial = True
+
+    if not agent:
+        candidate = db.query(Agent).filter(Agent.hostname == payload.hostname).first()
+        # Si el candidato por hostname ya tiene una serie DISTINTA a la
+        # reportada ahora, es un equipo físico distinto que solo coincide en
+        # nombre: no se mezcla con ese registro, se trata como nuevo.
+        if candidate and payload.serial_number and candidate.serial_number \
+                and candidate.serial_number != payload.serial_number:
+            candidate = None
+        agent = candidate
+
     if not agent and not payload.serial_number and payload.manufacturer and payload.model:
         agent = db.query(Agent).filter(
             Agent.manufacturer == payload.manufacturer,
-            Agent.model == payload.model
+            Agent.model == payload.model,
+            Agent.serial_number.is_(None),
         ).first()
         if agent:
             agent.hostname = payload.hostname
@@ -514,8 +530,16 @@ def get_global_events(
 
 # ── Lista de bloqueo (consultada periódicamente por el agente) ─────────────
 @router.get("/blocklist")
-def get_blocklist(hostname: str, ssid: Optional[str] = Query(None), db: Session = Depends(get_db)):
-    agent = db.query(Agent).filter(Agent.hostname == hostname).first()
+def get_blocklist(hostname: str, ssid: Optional[str] = Query(None), serial: Optional[str] = Query(None), db: Session = Depends(get_db)):
+    # El hostname puede repetirse entre equipos distintos (ver receive_metrics),
+    # así que si el agente manda su serial (versión nueva del script) se usa
+    # eso para identificarlo sin ambigüedad. Si no lo manda (agente viejo
+    # todavía no actualizado), se cae de vuelta al hostname como antes.
+    agent = None
+    if serial:
+        agent = db.query(Agent).filter(Agent.serial_number == serial).first()
+    if not agent:
+        agent = db.query(Agent).filter(Agent.hostname == hostname).first()
 
     active_sites = db.query(BlockedSite).filter(BlockedSite.active == True).all()
     all_domains = resolve_all_configured_domains(agent, active_sites)
