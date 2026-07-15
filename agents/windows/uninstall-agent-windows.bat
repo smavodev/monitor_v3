@@ -26,8 +26,8 @@ echo [OK] Clave de autoinicio eliminada
 REM 3) Matar cualquier proceso del agente que quede vivo (reintenta 3 veces)
 powershell -ExecutionPolicy Bypass -Command "for ($i = 0; $i -lt 3; $i++) { $procs = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*smartmonitor-push.ps1*' }; if (-not $procs) { break }; $procs | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }; Start-Sleep -Milliseconds 500 }; $left = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*smartmonitor-push.ps1*' }; if ($left) { Write-Host '[WARN] Sigue vivo un proceso del agente (PID' $left.ProcessId ') - revisa manualmente' } else { Write-Host '[OK] Procesos del agente detenidos' }"
 
-REM 4) Restaurar el DNS automatico (DHCP) en todos los adaptadores activos
-powershell -ExecutionPolicy Bypass -Command "$adapters = Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' }; foreach ($a in $adapters) { try { Set-DnsClientServerAddress -InterfaceIndex $a.InterfaceIndex -ResetServerAddresses -ErrorAction SilentlyContinue } catch {} }; ipconfig /flushdns | Out-Null"
+REM 4) Restaurar el DNS automatico (DHCP) y reactivar IPv6 (si el agente lo habia deshabilitado para bloquear) en todos los adaptadores activos
+powershell -ExecutionPolicy Bypass -Command "$adapters = Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' }; foreach ($a in $adapters) { try { Set-DnsClientServerAddress -InterfaceIndex $a.InterfaceIndex -ResetServerAddresses -ErrorAction SilentlyContinue } catch {}; try { $b = Get-NetAdapterBinding -InterfaceIndex $a.InterfaceIndex -ComponentID ms_tcpip6 -ErrorAction SilentlyContinue; if ($b -and -not $b.Enabled) { Enable-NetAdapterBinding -InterfaceIndex $a.InterfaceIndex -ComponentID ms_tcpip6 -ErrorAction SilentlyContinue } } catch {} }; ipconfig /flushdns | Out-Null"
 echo [OK] DNS de los adaptadores de red restaurado a automatico (DHCP)
 
 REM 5) Quitar el certificado de la CA de SmartMonitor del almacen de confianza
