@@ -1,8 +1,9 @@
 from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from pydantic import BaseModel
 from typing import Optional
-from datetime import timedelta
+from datetime import timedelta, datetime
 
 from core.db import get_db
 from core.permissions import require_permission
@@ -97,15 +98,24 @@ def _fmt(r: BlockAttempt, agents_by_id: dict, sedes_by_id: dict, exceptions: lis
 @router.get("/block-attempts")
 def list_block_attempts(
     agent_id: Optional[str] = Query(None),
-    sede_id: Optional[str] = Query(None),
+    sede_id: Optional[str] = Query(None),  # "__none__" = equipos sin área asignada
     days: int = Query(7, ge=1, le=365),
     status: Optional[str] = Query(None),  # "blocked" | "allowed" | None (todos)
     user=Depends(require_permission("parental_attempts", "view")), db: Session = Depends(get_db),
 ):
-    since = _local_now(None).date() - timedelta(days=days - 1)
-    q = db.query(BlockAttempt).filter(BlockAttempt.date >= since)
+    now = _local_now(None)
+    since_date = now.date() - timedelta(days=days - 1)
+
+    # Total "global" = mismo rango de días, sin los demás filtros (área/equipo/
+    # estado) — sirve de referencia de "cuántos hay en total" junto al filtrado.
+    total_count = db.query(BlockAttempt).filter(BlockAttempt.date >= since_date).count()
+
+    q = db.query(BlockAttempt).filter(BlockAttempt.date >= since_date)
     if agent_id:
         q = q.filter(BlockAttempt.agent_id == agent_id)
+    elif sede_id == "__none__":
+        ids = [a.id for a in db.query(Agent).filter(Agent.sede_id.is_(None)).all()]
+        q = q.filter(BlockAttempt.agent_id.in_(ids))
     elif sede_id:
         ids = [a.id for a in db.query(Agent).filter(Agent.sede_id == sede_id).all()]
         q = q.filter(BlockAttempt.agent_id.in_(ids))
@@ -113,15 +123,31 @@ def list_block_attempts(
         q = q.filter(BlockAttempt.blocked == True)
     elif status == "allowed":
         q = q.filter(BlockAttempt.blocked == False)
-    rows = q.order_by(BlockAttempt.date.desc(), BlockAttempt.count.desc()).all()
+    # Más recientes primero de verdad: por el momento real del último intento,
+    # no por fecha+cantidad (eso no reflejaba qué pasó más recientemente).
+    rows = q.order_by(BlockAttempt.last_seen.desc()).all()
+
     agents_by_id = {a.id: a for a in db.query(Agent).all()}
     sedes_by_id = {s.id: s for s in db.query(Sede).all()}
-    now = _local_now(None)
     exceptions = db.query(BlockedSite).filter(
         BlockedSite.active == True, BlockedSite.is_exception == True,
     ).all()
     exceptions = [e for e in exceptions if e.expires_at is None or e.expires_at > now]
-    return [_fmt(r, agents_by_id, sedes_by_id, exceptions) for r in rows]
+
+    # Promedio de intentos/minuto del conjunto filtrado — no hay timestamp por
+    # intento individual (se agrega por día), así que se aproxima como
+    # intentos totales / minutos transcurridos desde el inicio del rango.
+    since_dt = datetime.combine(since_date, datetime.min.time())
+    minutes_elapsed = max((now - since_dt).total_seconds() / 60, 1)
+    total_attempts_filtered = sum(r.count for r in rows)
+    rate_per_minute = round(total_attempts_filtered / minutes_elapsed, 3)
+
+    return {
+        "items": [_fmt(r, agents_by_id, sedes_by_id, exceptions) for r in rows],
+        "filtered_count": len(rows),
+        "total_count": total_count,
+        "rate_per_minute": rate_per_minute,
+    }
 
 class RetentionUpdate(BaseModel):
     retention_days: Optional[int] = None
