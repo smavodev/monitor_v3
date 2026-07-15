@@ -245,7 +245,7 @@ canvas.spark{width:100%;height:80px}
 .export-menu-item svg{flex-shrink:0;opacity:.7}
 /* ── Data table (users, areas) ── */
 .data-table{width:100%;border-collapse:collapse}
-.data-table th{font-size:12px;color:var(--text-dim);font-weight:600;text-transform:uppercase;letter-spacing:.4px;padding:10px 12px;text-align:left;border-bottom:1px solid var(--border);background:var(--surface2)}
+.data-table th{font-size:12px;color:var(--text-dim);font-weight:600;text-transform:uppercase;letter-spacing:.4px;padding:10px 12px;text-align:left;border-bottom:1px solid var(--border);background:var(--surface2);position:sticky;top:0;z-index:5}
 .data-table td{padding:12px;font-size:13px;border-bottom:1px solid var(--border)}
 .data-table tr:last-child td{border-bottom:none}
 .data-table tr:hover td{background:var(--surface2)}
@@ -626,7 +626,7 @@ canvas.spark{width:100%;height:80px}
         </span>
         <button class="btn btn-sm btn-ghost" id="inv-btn-clear-selection" style="margin-left:auto" onclick="clearInventorySelection()" disabled>Cancelar selección</button>
       </div>
-      <div class="card" style="overflow:auto">
+      <div class="card" style="overflow:auto;max-height:calc(100vh - 320px)">
         <table class="data-table" id="inventory-table">
         <thead><tr>
             <th style="width:36px"><input type="checkbox" id="inv-select-all" onchange="toggleSelectAllAgents(this.checked)"></th>
@@ -736,7 +736,7 @@ canvas.spark{width:100%;height:80px}
         </div>
         <div id="ev-results-info" style="font-size:12px;color:var(--text-dim);margin-top:8px"></div>
       </div>
-      <div class="card" style="overflow:auto">
+      <div class="card" style="overflow:auto;max-height:calc(100vh - 320px)">
         <table class="data-table" id="events-table">
           <thead><tr>
             <th style="width:105px">Fecha</th>
