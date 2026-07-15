@@ -4364,7 +4364,6 @@ async function renderAgentDetail(id, panel) {
       const ASSIGN_PAGE = 3;
       const trs = (rows || []).map(r => {
         const name = r.assigned_to_name || (r.assigned_to ? 'ID ' + r.assigned_to : '—');
-        const del = `<button class="btn btn-ghost btn-sm" title="Eliminar" onclick="deleteAssignment('${id}',${r.id})">✕</button>`;
         const entrega = `${r.assigned_at || '—'}${r.delivery_notes ? `<div style="margin-top:2px">${r.delivery_notes}</div>` : ''}`;
         const devolucion = (r.returned_at || r.return_notes)
           ? `${r.returned_at || '—'}${r.return_notes ? `<div style="margin-top:2px">${r.return_notes}</div>` : ''}`
@@ -4374,26 +4373,19 @@ async function renderAgentDetail(id, panel) {
           <td style="font-weight:600;white-space:nowrap">${name}${by}</td>
           <td style="white-space:nowrap">${entrega}</td>
           <td style="white-space:nowrap">${devolucion}</td>
-          <td style="text-align:right">${del}</td>
         </tr>`;
       });
       const extra = trs.length - ASSIGN_PAGE;
       list.innerHTML = trs.length ? (
         `<table class="data-table" style="width:100%;font-size:13px">
-          <thead><tr><th>Asignado a</th><th>Entrega</th><th>Devolución</th><th></th></tr></thead>
+          <thead><tr><th>Asignado a</th><th>Entrega</th><th>Devolución</th></tr></thead>
           <tbody>${trs.slice(0, ASSIGN_PAGE).join('')}</tbody>
           ${extra > 0 ? `<tbody id="inv-assign-more-${id}" style="display:none">${trs.slice(ASSIGN_PAGE).join('')}</tbody>` : ''}
         </table>` +
         (extra > 0 ? `<button class="btn btn-ghost btn-sm" id="inv-assign-toggle-${id}" style="margin-top:4px" onclick="toggleAssignmentMore('${id}', ${extra})">+ Ver ${extra} más</button>` : '')
       ) : '<div style="text-align:center;padding:16px 10px;color:var(--text-dim);font-size:13px;border:1px dashed var(--border);border-radius:10px">📋 Sin asignaciones registradas para este equipo.</div>';
-      // "Devolver" solo tiene sentido si la asignación más reciente sigue abierta
-      // (tiene a quién se le entregó y todavía no se registró devolución).
-      const openRec = rows && rows[0] && (rows[0].assigned_to || rows[0].assigned_to_name) && !rows[0].returned_at ? rows[0] : null;
-      el.insertAdjacentHTML('beforeend',
-        '<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">' +
-        '<button class="btn btn-primary btn-sm" onclick="openAssignModal(\'' + id + '\')">Asignar</button>' +
-        (openRec ? '<button class="btn btn-ghost btn-sm" onclick="openReturnModal(\'' + id + '\',' + openRec.id + ')">Devolver</button>' : '') +
-        '</div>');
+      // Asignar/Devolver ya están disponibles seleccionando el equipo (checkbox)
+      // y usando la barra de acciones de Inventario — no hace falta duplicarlos aquí.
     } catch (e) { list.innerHTML = '<div style="color:var(--red)">' + (e.message || 'Error') + '</div>'; }
   }
 }
@@ -4451,15 +4443,6 @@ async function saveAssignment() {
     const fresh = allAgents.find(a => a.id === id);
     if (fresh) updateDetailMetrics(fresh);
   } catch (e) { alert(e.message || 'No se pudo guardar la asignación.'); }
-}
-
-async function deleteAssignment(agentId, recordId) {
-  if (!confirm('¿Eliminar este registro de asignación?')) return;
-  try {
-    await api(`/api/agents/${agentId}/assignments/${recordId}`, {method:'DELETE'});
-    await fetchAgents();
-    if (expandedAgentId === agentId && expandedPanel === 'assignment') await renderAgentDetail(agentId, 'assignment');
-  } catch (e) { alert(e.message || 'No se pudo eliminar el registro.'); }
 }
 
 function openModal(id) { document.getElementById(id).classList.add('open'); }
