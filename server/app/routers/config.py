@@ -17,13 +17,32 @@ def _write(data):
 
 @router.get("/interval")
 def get_interval():
-    return {"interval": _read().get("push_interval", 5)}
+    cfg = _read()
+    # blocklist_interval viaja junto con el intervalo de metricas: el agente
+    # ya llama a este endpoint una vez por ciclo de metricas, asi que el
+    # intervalo de bloqueo se refresca con esa misma cadencia (cada 5 o 10
+    # min, lo que sea que este configurado), sin una llamada aparte cada 10s.
+    return {
+        "interval": cfg.get("push_interval", 5),
+        "blocklist_interval": cfg.get("blocklist_poll_sec", 10),
+    }
 
 @router.put("/interval")
 def set_interval(data: dict, user=Depends(require_permission("settings", "edit"))):
     val = max(60, min(1800, int(data.get("interval", 60))))
     cfg = _read()
     cfg["push_interval"] = val
+    _write(cfg)
+    return {"interval": val}
+
+@router.put("/blocklist-interval")
+def set_blocklist_interval(data: dict, user=Depends(require_permission("settings", "edit"))):
+    # Es el ciclo que decide si bloquear o no - se mantiene mas acotado que el
+    # intervalo de metricas (60-1800s) para no perder la idea de "bloqueo
+    # inmediato", pero configurable si hace falta relajarlo por escala.
+    val = max(3, min(60, int(data.get("interval", 10))))
+    cfg = _read()
+    cfg["blocklist_poll_sec"] = val
     _write(cfg)
     return {"interval": val}
 

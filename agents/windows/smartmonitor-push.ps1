@@ -451,6 +451,12 @@ while ($true) {
             try {
                 $cfg      = Invoke-RestMethod -Uri "$SERVER/api/config/interval" -Method GET -TimeoutSec 3
                 $INTERVAL = [math]::Max(3, [int]$cfg.interval)
+                # El intervalo de revision de bloqueo tambien lo maneja el
+                # server (Configuracion -> "Bloqueo cada") - se refresca con
+                # la misma cadencia que el de metricas, sin llamada aparte.
+                if ($cfg.blocklist_interval) {
+                    $BLOCKLIST_POLL_SEC = [math]::Max(3, [int]$cfg.blocklist_interval)
+                }
             } catch {}
 
             $lastMetrics = Get-Date

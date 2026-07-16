@@ -398,9 +398,10 @@ hw["device_type"] = get_device_type()
 def get_interval():
     try:
         r = urllib.request.urlopen(f"{SERVER}/api/config/interval", timeout=3)
-        return max(3, int(json.loads(r.read()).get("interval", 5)))
+        cfg = json.loads(r.read())
+        return max(3, int(cfg.get("interval", 5))), max(3, int(cfg.get("blocklist_interval", 10)))
     except:
-        return 5
+        return 5, 10
 
 def send_once():
     # ── Procesos top (agrupados por nombre) ──────────────────────────────
@@ -516,10 +517,11 @@ def send_once():
     urllib.request.urlopen(req, timeout=5)
 
 # ── Loop principal ────────────────────────────────────────────────────────
-# El bloqueo (dominios/excepciones/horario/red) se revisa cada BLOCKLIST_POLL_SEC
-# fijo, independiente del intervalo de métricas — así una excepción que agregas o
-# quitas se refleja en segundos y no hay que esperar el intervalo (que puede ser
-# de varios minutos) configurado para el reporte de métricas.
+# El bloqueo (dominios/excepciones/horario/red) se revisa cada BLOCKLIST_POLL_SEC,
+# independiente del intervalo de métricas — así una excepción que agregas o
+# quitas se refleja rápido sin esperar el intervalo (que puede ser de varios
+# minutos) configurado para el reporte de métricas. Ambos son configurables
+# por separado desde el servidor (Configuración), sin tocar este archivo.
 BLOCKLIST_POLL_SEC = 10
 
 # Server y hostname bien visibles al arrancar: si el agente alguna vez queda
@@ -537,7 +539,7 @@ block_doh_endpoints_linux()
 # el agente sigue funcionando por IP publica igual que siempre)
 setup_wireguard_tunnel()
 
-interval = get_interval()
+interval, BLOCKLIST_POLL_SEC = get_interval()
 last_metrics = 0.0
 last_wireguard_retry = time.time()
 while True:
@@ -545,7 +547,7 @@ while True:
         now_t = time.time()
         if now_t - last_metrics >= interval:
             send_once()
-            interval = get_interval()
+            interval, BLOCKLIST_POLL_SEC = get_interval()
             last_metrics = time.time()
         # Se revalida en CADA ciclo si el tunel sigue realmente vivo (no solo
         # una vez al conectar): si Tailscale se cae despues de haber estado

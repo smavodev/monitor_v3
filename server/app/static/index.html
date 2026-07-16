@@ -401,6 +401,18 @@ canvas.spark{width:100%;height:80px}
           <option value="1800">30 min</option>
         </select>
       </div>
+      <div class="nav-interval" title="Cada cuanto revisa cada equipo si debe bloquear o no - mas bajo reacciona mas rapido a una excepcion, mas alto genera menos trafico">
+        <div class="nav-interval-label">Bloqueo cada</div>
+        <select id="blocklist-interval-select" class="form-input" style="padding:5px 10px;font-size:12px;cursor:pointer;flex:1" onchange="setBlocklistInterval(this.value)">
+          <option value="5">5 seg</option>
+          <option value="10" selected>10 seg</option>
+          <option value="15">15 seg</option>
+          <option value="20">20 seg</option>
+          <option value="30">30 seg</option>
+          <option value="45">45 seg</option>
+          <option value="60">60 seg</option>
+        </select>
+      </div>
       <div class="nav-profile">
         <div class="nav-avatar" id="nav-avatar">--</div>
         <div class="nav-profile-info">
@@ -1903,7 +1915,7 @@ async function startApp() {
     }
   }
 
-  // Cargar intervalo de push desde el servidor y actualizar selector
+  // Cargar intervalo de push y de bloqueo desde el servidor y actualizar selectores
   try {
     const cfg = await api('/api/config/interval');
     const interval = cfg.interval || 60;
@@ -1912,6 +1924,13 @@ async function startApp() {
       const opts = Array.from(sel.options).map(o => parseInt(o.value));
       const closest = opts.reduce((a, b) => Math.abs(b - interval) < Math.abs(a - interval) ? b : a);
       sel.value = String(closest);
+    }
+    const blSel = document.getElementById('blocklist-interval-select');
+    if (blSel) {
+      const blInterval = cfg.blocklist_interval || 10;
+      const blOpts = Array.from(blSel.options).map(o => parseInt(o.value));
+      const blClosest = blOpts.reduce((a, b) => Math.abs(b - blInterval) < Math.abs(a - blInterval) ? b : a);
+      blSel.value = String(blClosest);
     }
   } catch {}
   startSSE();
@@ -1945,6 +1964,12 @@ async function manualRefresh() {
 function setPushInterval(val) {
   const secs = Math.max(60, parseInt(val) || 60);
   api('/api/config/interval', {method:'PUT', body:JSON.stringify({interval: secs})}).catch(()=>{});
+}
+
+// ── Intervalo de revision de bloqueo (independiente del de metricas) ──────
+function setBlocklistInterval(val) {
+  const secs = Math.max(3, Math.min(60, parseInt(val) || 10));
+  api('/api/config/blocklist-interval', {method:'PUT', body:JSON.stringify({interval: secs})}).catch(()=>{});
 }
 
 function startSSE() {
