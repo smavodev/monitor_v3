@@ -401,16 +401,6 @@ canvas.spark{width:100%;height:80px}
           <option value="1800">30 min</option>
         </select>
       </div>
-      <div class="nav-interval" title="Cada cuanto revisa cada equipo si debe bloquear o no - mas bajo reacciona mas rapido a una excepcion, mas alto genera menos trafico">
-        <div class="nav-interval-label">Bloqueo cada</div>
-        <select id="blocklist-interval-select" class="form-input" style="padding:5px 10px;font-size:12px;cursor:pointer;flex:1" onchange="setBlocklistInterval(this.value)">
-          <option value="60" selected>1 min</option>
-          <option value="180">3 min</option>
-          <option value="300">5 min</option>
-          <option value="420">7 min</option>
-          <option value="600">10 min</option>
-        </select>
-      </div>
       <div class="nav-profile">
         <div class="nav-avatar" id="nav-avatar">--</div>
         <div class="nav-profile-info">
@@ -1387,6 +1377,18 @@ canvas.spark{width:100%;height:80px}
       <div id="network-gate-chips" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:12px"></div>
     </div>
 
+    <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border)">
+      <label class="form-label">Revisar si debe bloquear cada</label>
+      <select id="modal-blocklist-interval-select" class="form-input" style="margin-top:6px" onchange="setBlocklistInterval(this.value)">
+        <option value="60" selected>1 min</option>
+        <option value="180">3 min</option>
+        <option value="300">5 min</option>
+        <option value="420">7 min</option>
+        <option value="600">10 min</option>
+      </select>
+      <div style="font-size:12px;color:var(--text-dim);margin-top:6px">Cada cuánto cada equipo pregunta si debe bloquear o no. Más bajo reacciona más rápido a una excepción o cambio de red; más alto genera menos tráfico contra el servidor (recomendado con muchos equipos).</div>
+    </div>
+
     <div style="font-size:12px;color:var(--text-dim);margin-top:12px" id="network-gate-hint"></div>
     <div class="modal-footer">
       <button class="btn btn-ghost" onclick="closeModal('modal-network-gate')">Cancelar</button>
@@ -1913,7 +1915,7 @@ async function startApp() {
     }
   }
 
-  // Cargar intervalo de push y de bloqueo desde el servidor y actualizar selectores
+  // Cargar intervalo de push desde el servidor y actualizar selector
   try {
     const cfg = await api('/api/config/interval');
     const interval = cfg.interval || 60;
@@ -1922,13 +1924,6 @@ async function startApp() {
       const opts = Array.from(sel.options).map(o => parseInt(o.value));
       const closest = opts.reduce((a, b) => Math.abs(b - interval) < Math.abs(a - interval) ? b : a);
       sel.value = String(closest);
-    }
-    const blSel = document.getElementById('blocklist-interval-select');
-    if (blSel) {
-      const blInterval = cfg.blocklist_interval || 10;
-      const blOpts = Array.from(blSel.options).map(o => parseInt(o.value));
-      const blClosest = blOpts.reduce((a, b) => Math.abs(b - blInterval) < Math.abs(a - blInterval) ? b : a);
-      blSel.value = String(blClosest);
     }
   } catch {}
   startSSE();
@@ -4176,6 +4171,18 @@ async function openNetworkGateModal() {
   networkGateList = cfg.networks || [];
   document.getElementById('network-gate-hint').textContent = '';
   renderNetworkGate();
+
+  try {
+    const intervalCfg = await api('/api/config/interval');
+    const blSel = document.getElementById('modal-blocklist-interval-select');
+    if (blSel) {
+      const blInterval = intervalCfg.blocklist_interval || 60;
+      const blOpts = Array.from(blSel.options).map(o => parseInt(o.value));
+      const blClosest = blOpts.reduce((a, b) => Math.abs(b - blInterval) < Math.abs(a - blInterval) ? b : a);
+      blSel.value = String(blClosest);
+    }
+  } catch {}
+
   openModal('modal-network-gate');
 }
 
