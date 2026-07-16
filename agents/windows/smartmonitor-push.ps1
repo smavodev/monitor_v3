@@ -13,6 +13,7 @@ $script:TailnetIp       = $null
 $script:TailnetServerIp = $null
 
 $MAX_LOG_BYTES = 5MB
+$MAX_LOG_AGE_DAYS = 7
 
 function Write-Log($msg) {
     $line = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $msg"
@@ -20,12 +21,19 @@ function Write-Log($msg) {
     try {
         $dir = Split-Path $LOG_FILE -Parent
         if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-        # Rotacion simple: sin esto el log crece para siempre. Al pasar de
-        # 5MB, el actual pasa a ser agent.log.old (pisando el anterior) y
-        # arranca uno nuevo vacio - siempre quedan las ultimas ~2 "vueltas"
-        # de historial, nunca se pierde todo de golpe ni crece sin limite.
-        if ((Test-Path $LOG_FILE) -and (Get-Item $LOG_FILE).Length -ge $MAX_LOG_BYTES) {
-            Move-Item -Path $LOG_FILE -Destination "$LOG_FILE.old" -Force -ErrorAction SilentlyContinue
+        # Rotacion: principalmente semanal (CreationTime del archivo actual),
+        # con el tamano (5MB) solo como red de seguridad extra por si algo
+        # genera muchisimo mas log de lo normal dentro de esa semana. Al
+        # cumplirse cualquiera de las dos, el actual pasa a ser
+        # agent.log.old (pisando el anterior) y arranca uno nuevo vacio -
+        # siempre quedan las ultimas ~2 "vueltas" de historial.
+        if (Test-Path $LOG_FILE) {
+            $logInfo  = Get-Item $LOG_FILE
+            $tooOld   = ((Get-Date) - $logInfo.CreationTime).TotalDays -ge $MAX_LOG_AGE_DAYS
+            $tooBig   = $logInfo.Length -ge $MAX_LOG_BYTES
+            if ($tooOld -or $tooBig) {
+                Move-Item -Path $LOG_FILE -Destination "$LOG_FILE.old" -Force -ErrorAction SilentlyContinue
+            }
         }
         Add-Content -Path $LOG_FILE -Value $line -Encoding UTF8 -Force
     } catch {}
