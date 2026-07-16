@@ -387,8 +387,16 @@ try {
     }
     $array = Get-CimInstance Win32_PhysicalMemoryArray -ErrorAction SilentlyContinue | Select-Object -First 1
     $total = if ($array) { [int]$array.MemoryDevices } else { 0 }
+    $ddrMap = @{ 20="DDR"; 21="DDR2"; 24="DDR3"; 26="DDR4"; 34="DDR5" }
     $slots = @(Get-CimInstance Win32_PhysicalMemory -ErrorAction SilentlyContinue | ForEach-Object {
-        $t = switch ([int]$_.MemoryType) { 24{"DDR3"} 26{"DDR4"} 34{"DDR5"} default{"DDR"} }
+        # MemoryType es un campo WMI viejo que en muchos equipos reales
+        # devuelve 0/Unknown (por eso salia "DDR" generico) - SMBIOSMemoryType
+        # lee el valor crudo del SMBIOS y es mucho mas confiable; usa los
+        # mismos codigos numericos, asi que se prueba primero y se cae a
+        # MemoryType solo si tampoco lo reconoce.
+        $t = if ($ddrMap.ContainsKey([int]$_.SMBIOSMemoryType)) { $ddrMap[[int]$_.SMBIOSMemoryType] }
+             elseif ($ddrMap.ContainsKey([int]$_.MemoryType))    { $ddrMap[[int]$_.MemoryType] }
+             else { "DDR" }
         @{ slot=$_.DeviceLocator; size_gb=[math]::Round($_.Capacity/1GB,0); type=$t
            speed=if($_.Speed){"$($_.Speed) MT/s"}else{""}
            manufacturer=($_.Manufacturer -replace '^\s+|\s+$','')
