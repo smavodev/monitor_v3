@@ -36,32 +36,46 @@ if not exist "%PS_SRC%" (
     exit /b 1
 )
 
+REM Detecta si hay algo de una instalacion anterior para limpiar (tarea
+REM programada o la carpeta de instalacion) - si no hay nada, se avisa
+REM claramente en vez de imprimir "[OK]" de pasos que no hicieron nada.
+set "HAD_PREVIOUS=0"
+schtasks /query /tn "SmartMonitor" >nul 2>&1
+if %errorlevel% equ 0 set "HAD_PREVIOUS=1"
+if exist "%INSTALL_DIR%" set "HAD_PREVIOUS=1"
+
 echo.
-echo  SmartMonitor v3 - Desinstalando instalacion previa...
-echo.
-
-REM 1) Detener y eliminar la tarea programada
-schtasks /end /tn "SmartMonitor" >nul 2>&1
-powershell -ExecutionPolicy Bypass -Command "Unregister-ScheduledTask -TaskName 'SmartMonitor' -Confirm:$false -ErrorAction SilentlyContinue" >nul 2>&1
-echo [OK] Tarea programada eliminada
-
-REM 2) Quitar autoinicio en el registro
-powershell -ExecutionPolicy Bypass -Command "Remove-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run' -Name 'SmartMonitor' -ErrorAction SilentlyContinue" >nul 2>&1
-echo [OK] Clave de autoinicio eliminada
-
-REM 3) Matar cualquier proceso del agente que quede vivo (libera el .ps1)
-powershell -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*smartmonitor-push.ps1*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }" >nul 2>&1
-echo [OK] Procesos previos detenidos
-
-REM 4) Restaurar el DNS del sistema si el agente lo habia tomado (127.0.0.1)
-powershell -ExecutionPolicy Bypass -Command "$adapters = Get-DnsClientServerAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.ServerAddresses -contains '127.0.0.1' }; foreach ($a in $adapters) { try { Set-DnsClientServerAddress -InterfaceIndex $a.InterfaceIndex -ResetServerAddresses } catch {} }" >nul 2>&1
-echo [OK] DNS del sistema restaurado (si aplica)
-
-REM 5) Borrar el directorio de instalacion anterior
-if exist "%INSTALL_DIR%" (
-    rd /s /q "%INSTALL_DIR%" >nul 2>&1
+if "%HAD_PREVIOUS%"=="1" (
+    echo  SmartMonitor v3 - Desinstalando instalacion previa...
+) else (
+    echo  SmartMonitor v3 - Sin instalaciones previas, instalando de cero...
 )
-echo [OK] Directorio anterior eliminado
+echo.
+
+if "%HAD_PREVIOUS%"=="1" (
+    REM 1) Detener y eliminar la tarea programada
+    schtasks /end /tn "SmartMonitor" >nul 2>&1
+    powershell -ExecutionPolicy Bypass -Command "Unregister-ScheduledTask -TaskName 'SmartMonitor' -Confirm:$false -ErrorAction SilentlyContinue" >nul 2>&1
+    echo [OK] Tarea programada eliminada
+
+    REM 2) Quitar autoinicio en el registro
+    powershell -ExecutionPolicy Bypass -Command "Remove-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run' -Name 'SmartMonitor' -ErrorAction SilentlyContinue" >nul 2>&1
+    echo [OK] Clave de autoinicio eliminada
+
+    REM 3) Matar cualquier proceso del agente que quede vivo (libera el .ps1)
+    powershell -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*smartmonitor-push.ps1*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }" >nul 2>&1
+    echo [OK] Procesos previos detenidos
+
+    REM 4) Restaurar el DNS del sistema si el agente lo habia tomado (127.0.0.1)
+    powershell -ExecutionPolicy Bypass -Command "$adapters = Get-DnsClientServerAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.ServerAddresses -contains '127.0.0.1' }; foreach ($a in $adapters) { try { Set-DnsClientServerAddress -InterfaceIndex $a.InterfaceIndex -ResetServerAddresses } catch {} }" >nul 2>&1
+    echo [OK] DNS del sistema restaurado (si aplica)
+
+    REM 5) Borrar el directorio de instalacion anterior
+    if exist "%INSTALL_DIR%" (
+        rd /s /q "%INSTALL_DIR%" >nul 2>&1
+    )
+    echo [OK] Directorio anterior eliminado
+)
 
 echo.
 echo  SmartMonitor v3 - Instalando agente Windows...
