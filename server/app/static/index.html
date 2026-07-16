@@ -404,13 +404,11 @@ canvas.spark{width:100%;height:80px}
       <div class="nav-interval" title="Cada cuanto revisa cada equipo si debe bloquear o no - mas bajo reacciona mas rapido a una excepcion, mas alto genera menos trafico">
         <div class="nav-interval-label">Bloqueo cada</div>
         <select id="blocklist-interval-select" class="form-input" style="padding:5px 10px;font-size:12px;cursor:pointer;flex:1" onchange="setBlocklistInterval(this.value)">
-          <option value="5">5 seg</option>
-          <option value="10" selected>10 seg</option>
-          <option value="15">15 seg</option>
-          <option value="20">20 seg</option>
-          <option value="30">30 seg</option>
-          <option value="45">45 seg</option>
-          <option value="60">60 seg</option>
+          <option value="60" selected>1 min</option>
+          <option value="180">3 min</option>
+          <option value="300">5 min</option>
+          <option value="420">7 min</option>
+          <option value="600">10 min</option>
         </select>
       </div>
       <div class="nav-profile">
@@ -1968,7 +1966,7 @@ function setPushInterval(val) {
 
 // ── Intervalo de revision de bloqueo (independiente del de metricas) ──────
 function setBlocklistInterval(val) {
-  const secs = Math.max(3, Math.min(60, parseInt(val) || 10));
+  const secs = Math.max(60, Math.min(1800, parseInt(val) || 60));
   api('/api/config/blocklist-interval', {method:'PUT', body:JSON.stringify({interval: secs})}).catch(()=>{});
 }
 

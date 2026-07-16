@@ -399,9 +399,9 @@ def get_interval():
     try:
         r = urllib.request.urlopen(f"{SERVER}/api/config/interval", timeout=3)
         cfg = json.loads(r.read())
-        return max(3, int(cfg.get("interval", 5))), max(3, int(cfg.get("blocklist_interval", 10)))
+        return max(3, int(cfg.get("interval", 5))), max(60, int(cfg.get("blocklist_interval", 60)))
     except:
-        return 5, 10
+        return 5, 60
 
 def send_once():
     # ── Procesos top (agrupados por nombre) ──────────────────────────────
@@ -518,11 +518,10 @@ def send_once():
 
 # ── Loop principal ────────────────────────────────────────────────────────
 # El bloqueo (dominios/excepciones/horario/red) se revisa cada BLOCKLIST_POLL_SEC,
-# independiente del intervalo de métricas — así una excepción que agregas o
-# quitas se refleja rápido sin esperar el intervalo (que puede ser de varios
-# minutos) configurado para el reporte de métricas. Ambos son configurables
-# por separado desde el servidor (Configuración), sin tocar este archivo.
-BLOCKLIST_POLL_SEC = 10
+# independiente del intervalo de métricas. Configurable desde el servidor
+# (Configuración -> "Bloqueo cada"), con piso de 1 minuto pensado para
+# producción a escala (cientos de equipos), sin tocar este archivo.
+BLOCKLIST_POLL_SEC = 60
 
 # Server y hostname bien visibles al arrancar: si el agente alguna vez queda
 # apuntando al servidor equivocado (ej. una reinstalación que no reemplazó el

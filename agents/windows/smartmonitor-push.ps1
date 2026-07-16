@@ -411,11 +411,12 @@ Block-DoHEndpoints
 Setup-WireguardTunnel
 
 # Loop principal
-# El bloqueo (dominios/excepciones/horario/red) se revisa cada BLOCKLIST_POLL_SEC
-# fijo, independiente del intervalo de métricas — así una excepción que agregas o
-# quitas se refleja en segundos y no hay que esperar el intervalo (que puede ser
-# de varios minutos) configurado para el reporte de métricas.
-$BLOCKLIST_POLL_SEC = 10
+# El bloqueo (dominios/excepciones/horario/red) se revisa cada BLOCKLIST_POLL_SEC,
+# independiente del intervalo de métricas — así una excepción que agregas o
+# quitas no depende del intervalo de métricas (que puede ser mucho más largo).
+# Configurable desde el servidor (Configuración -> "Bloqueo cada"), con piso
+# de 1 minuto pensado para producción a escala (cientos de equipos).
+$BLOCKLIST_POLL_SEC = 60
 $prevSwHash = if (Test-Path $SW_HASH_FILE) { (Get-Content $SW_HASH_FILE -Raw).Trim() } else { "" }
 $loopCount   = 0
 $lastMetrics = [DateTime]::MinValue
@@ -455,7 +456,7 @@ while ($true) {
                 # server (Configuracion -> "Bloqueo cada") - se refresca con
                 # la misma cadencia que el de metricas, sin llamada aparte.
                 if ($cfg.blocklist_interval) {
-                    $BLOCKLIST_POLL_SEC = [math]::Max(3, [int]$cfg.blocklist_interval)
+                    $BLOCKLIST_POLL_SEC = [math]::Max(60, [int]$cfg.blocklist_interval)
                 }
             } catch {}
 

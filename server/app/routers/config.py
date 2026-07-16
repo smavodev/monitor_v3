@@ -24,7 +24,7 @@ def get_interval():
     # min, lo que sea que este configurado), sin una llamada aparte cada 10s.
     return {
         "interval": cfg.get("push_interval", 5),
-        "blocklist_interval": cfg.get("blocklist_poll_sec", 10),
+        "blocklist_interval": cfg.get("blocklist_poll_sec", 60),
     }
 
 @router.put("/interval")
@@ -37,10 +37,11 @@ def set_interval(data: dict, user=Depends(require_permission("settings", "edit")
 
 @router.put("/blocklist-interval")
 def set_blocklist_interval(data: dict, user=Depends(require_permission("settings", "edit"))):
-    # Es el ciclo que decide si bloquear o no - se mantiene mas acotado que el
-    # intervalo de metricas (60-1800s) para no perder la idea de "bloqueo
-    # inmediato", pero configurable si hace falta relajarlo por escala.
-    val = max(3, min(60, int(data.get("interval", 10))))
+    # Piso de 1 minuto (60s): igual que el intervalo de metricas, pensado
+    # para produccion a escala (cientos de equipos), no para reaccionar en
+    # segundos. Independiente del intervalo de metricas igual, para poder
+    # tener uno mas lento y el otro mas rapido segun haga falta.
+    val = max(60, min(1800, int(data.get("interval", 60))))
     cfg = _read()
     cfg["blocklist_poll_sec"] = val
     _write(cfg)
