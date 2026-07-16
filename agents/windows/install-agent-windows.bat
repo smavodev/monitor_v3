@@ -112,6 +112,12 @@ if exist "%ProgramFiles%\Tailscale\tailscale.exe" (
     )
 )
 
+REM El agente solo necesita el servicio de Tailscale (usa la CLI para
+REM conectarse), no la app grafica de bandeja - se quita su acceso directo de
+REM inicio para que el equipo no muestre el icono, sin afectar el servicio.
+del /f /q "C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp\Tailscale.lnk" >nul 2>&1
+taskkill /IM tailscale-ipn.exe /F >nul 2>&1
+
 echo.
 echo Instalando certificado de la CA del servidor (para que la pagina de bloqueo se vea tambien en sitios HTTPS)...
 powershell -ExecutionPolicy Bypass -Command ^
