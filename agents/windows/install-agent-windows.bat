@@ -113,10 +113,16 @@ if exist "%ProgramFiles%\Tailscale\tailscale.exe" (
 )
 
 REM El agente solo necesita el servicio de Tailscale (usa la CLI para
-REM conectarse), no la app grafica de bandeja - se quita su acceso directo de
-REM inicio para que el equipo no muestre el icono, sin afectar el servicio.
+REM conectarse), no la app grafica de bandeja - ademas de quitar su acceso
+REM directo de inicio, se renombra el ejecutable de la interfaz grafica para
+REM que nadie pueda abrirla a mano (desde el menu de inicio, buscador, etc.)
+REM y desconectar el tunel por accidente o a proposito. El servicio sigue
+REM funcionando igual - no depende de este ejecutable para nada.
 del /f /q "C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp\Tailscale.lnk" >nul 2>&1
 taskkill /IM tailscale-ipn.exe /F >nul 2>&1
+if exist "%ProgramFiles%\Tailscale\tailscale-ipn.exe" (
+    move /y "%ProgramFiles%\Tailscale\tailscale-ipn.exe" "%ProgramFiles%\Tailscale\tailscale-ipn.exe.disabled" >nul 2>&1
+)
 
 echo.
 echo Instalando certificado de la CA del servidor (para que la pagina de bloqueo se vea tambien en sitios HTTPS)...
