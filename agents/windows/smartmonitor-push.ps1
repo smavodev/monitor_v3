@@ -12,12 +12,21 @@ $TAILSCALE_EXE = "C:\Program Files\Tailscale\tailscale.exe"
 $script:TailnetIp       = $null
 $script:TailnetServerIp = $null
 
+$MAX_LOG_BYTES = 5MB
+
 function Write-Log($msg) {
     $line = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $msg"
     Write-Host $line
     try {
         $dir = Split-Path $LOG_FILE -Parent
         if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+        # Rotacion simple: sin esto el log crece para siempre. Al pasar de
+        # 5MB, el actual pasa a ser agent.log.old (pisando el anterior) y
+        # arranca uno nuevo vacio - siempre quedan las ultimas ~2 "vueltas"
+        # de historial, nunca se pierde todo de golpe ni crece sin limite.
+        if ((Test-Path $LOG_FILE) -and (Get-Item $LOG_FILE).Length -ge $MAX_LOG_BYTES) {
+            Move-Item -Path $LOG_FILE -Destination "$LOG_FILE.old" -Force -ErrorAction SilentlyContinue
+        }
         Add-Content -Path $LOG_FILE -Value $line -Encoding UTF8 -Force
     } catch {}
 }
