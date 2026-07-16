@@ -201,7 +201,14 @@ def receive_metrics(payload: MetricPayload, request: Request, db: Session = Depe
     if payload.ram_slots_used:   agent.ram_slots_used   = payload.ram_slots_used
     if payload.ram_slots_detail:   agent.ram_slots_detail   = payload.ram_slots_detail
     if payload.ram_total_gb:       agent.ram_total_gb       = payload.ram_total_gb
-    if payload.tailnet_ip:         agent.tailnet_ip         = payload.tailnet_ip
+    # A diferencia de los demas campos opcionales de arriba (que solo se
+    # actualizan si vienen con dato, porque el hardware no "deja de tener"
+    # fabricante/modelo), tailnet_ip SIEMPRE se sobrescribe con lo que
+    # reporte el agente - incluido null/vacio, que es exactamente lo que
+    # manda cuando el tunel se desconecto. Si solo se actualizara cuando
+    # viene con valor, la IP vieja quedaba pegada para siempre en la base y
+    # el panel mostraba "Conectado" aunque el equipo ya no lo estuviera.
+    agent.tailnet_ip = payload.tailnet_ip
     if payload.installed_software:
         agent.installed_software  = payload.installed_software
         agent.software_updated_at = now
