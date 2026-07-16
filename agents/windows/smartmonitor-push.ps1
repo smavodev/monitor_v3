@@ -415,8 +415,21 @@ Setup-WireguardTunnel
 # independiente del intervalo de métricas — así una excepción que agregas o
 # quitas no depende del intervalo de métricas (que puede ser mucho más largo).
 # Configurable desde el servidor (Configuración -> "Bloqueo cada"), con piso
-# de 1 minuto pensado para producción a escala (cientos de equipos).
+# de 1 minuto pensado para producción a escala (cientos de equipos). El valor
+# de aca abajo es solo el respaldo por si el servidor no responde todavia -
+# se pide el real de inmediato despues, sin esperar al primer ciclo del loop.
 $BLOCKLIST_POLL_SEC = 60
+
+# Pide los intervalos reales al servidor ya desde el arranque, en vez de
+# esperar al primer ciclo del loop para corregir los valores de respaldo
+# ($INTERVAL de la linea 6, $BLOCKLIST_POLL_SEC de arriba) - si el server no
+# responde todavia (red lenta al iniciar), se quedan esos respaldos hasta el
+# primer ciclo exitoso, sin romper nada.
+try {
+    $cfg = Invoke-RestMethod -Uri "$SERVER/api/config/interval" -Method GET -TimeoutSec 5
+    $INTERVAL = [math]::Max(3, [int]$cfg.interval)
+    if ($cfg.blocklist_interval) { $BLOCKLIST_POLL_SEC = [math]::Max(60, [int]$cfg.blocklist_interval) }
+} catch {}
 $prevSwHash = if (Test-Path $SW_HASH_FILE) { (Get-Content $SW_HASH_FILE -Raw).Trim() } else { "" }
 $loopCount   = 0
 $lastMetrics = [DateTime]::MinValue
