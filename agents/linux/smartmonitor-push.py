@@ -547,9 +547,17 @@ while True:
             send_once()
             interval = get_interval()
             last_metrics = time.time()
+        # Se revalida en CADA ciclo si el tunel sigue realmente vivo (no solo
+        # una vez al conectar): si Tailscale se cae despues de haber estado
+        # conectado, tailnet_ip quedaba en un valor viejo para siempre, y el
+        # agente seguia apuntando el DNS a una IP del tunel que ya no
+        # respondia -> el equipo terminaba usando otro DNS sin filtrar y el
+        # bloqueo se saltaba por completo.
+        tailnet_ip = get_tailscale_ip()
+
         # Reintenta conectar el tunel WireGuard cada ~60s si todavia no lo
-        # logro (ej. tailscaled tardo en arrancar, o el server no tenia
-        # Headscale configurado en ese momento).
+        # logro (ej. tailscaled tardo en arrancar, se cayo, o el server no
+        # tenia Headscale configurado en ese momento).
         if not tailnet_ip and time.time() - last_wireguard_retry >= 60:
             setup_wireguard_tunnel()
             last_wireguard_retry = time.time()

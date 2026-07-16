@@ -457,9 +457,17 @@ while ($true) {
             $loopCount++
         }
 
+        # Se revalida en CADA ciclo si el tunel sigue realmente vivo (no solo
+        # una vez al conectar): si Tailscale se cae despues de haber estado
+        # conectado, $script:TailnetIp quedaba en un valor viejo para
+        # siempre, y el agente seguia apuntando el DNS a una IP del tunel que
+        # ya no respondia -> Windows terminaba usando otro DNS sin filtrar
+        # (resolucion multi-homed) y el bloqueo se saltaba por completo.
+        $script:TailnetIp = Get-TailscaleIp
+
         # Reintenta conectar el tunel WireGuard cada ~60s si todavia no lo
-        # logro (ej. el servicio de Tailscale tardo en arrancar, o el server
-        # no tenia Headscale configurado en ese momento).
+        # logro (ej. el servicio de Tailscale tardo en arrancar, se cayo, o
+        # el server no tenia Headscale configurado en ese momento).
         if (-not $script:TailnetIp -and ((Get-Date) - $lastWireguardRetry).TotalSeconds -ge 60) {
             Setup-WireguardTunnel
             $lastWireguardRetry = Get-Date
