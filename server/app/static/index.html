@@ -4278,13 +4278,28 @@ async function fetchWireguardTunnel() {
   const data = await api('/api/agents');
   if (!data) return;
   const rows = [...data].sort((a, b) => (b.tailnet_ip ? 1 : 0) - (a.tailnet_ip ? 1 : 0));
-  document.getElementById('tunnel-body').innerHTML = rows.length ? rows.map(a => `
+  document.getElementById('tunnel-body').innerHTML = rows.length ? rows.map(a => {
+    // tailnet_ip por si solo no alcanza: si el equipo se desinstalo (o esta
+    // apagado) sin llegar a reportar que el tunel se cerro, la IP queda
+    // pegada con el ultimo valor real. Se cruza con el mismo "online" que
+    // ya usa el resto del panel (basado en hace cuanto no reporta), no en
+    // un aviso explicito de desinstalacion que puede no llegar nunca.
+    let badge;
+    if (a.tailnet_ip && a.status === 'online') {
+      badge = '<span class="badge active">Conectado</span>';
+    } else if (a.tailnet_ip) {
+      badge = '<span class="badge offline">Desconectado (equipo sin reportar)</span>';
+    } else {
+      badge = '<span class="badge offline">No conectado</span>';
+    }
+    return `
     <tr>
       <td>${a.display_name || a.hostname}</td>
       <td style="font-size:12px;color:var(--text-mid)">${a.serial_number || '—'}</td>
       <td style="font-size:12px;color:var(--text-mid)">${a.tailnet_ip || '—'}</td>
-      <td>${a.tailnet_ip ? '<span class="badge active">Conectado</span>' : '<span class="badge offline">No conectado</span>'}</td>
-    </tr>`).join('') : `<tr><td colspan="4" style="text-align:center;color:var(--text-dim);padding:24px">No hay equipos registrados.</td></tr>`;
+      <td>${badge}</td>
+    </tr>`;
+  }).join('') : `<tr><td colspan="4" style="text-align:center;color:var(--text-dim);padding:24px">No hay equipos registrados.</td></tr>`;
 }
 
 async function fetchAttemptsRetention() {
