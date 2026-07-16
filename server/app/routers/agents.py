@@ -5,14 +5,13 @@ from sqlalchemy import desc
 from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime, timedelta
-import asyncio, json, urllib.request, urllib.parse
+import asyncio, json, urllib.request, urllib.parse, threading, time as _time
 from core.db import get_db, get_user_from_token_param, Session as DBSession
 from core.permissions import require_permission
 from core.notify import send_email_silent
-from models.models import Agent, Metric, Disk, Event, AlertConfig, BlockedSite, AgentChangeLog, AssignmentLog, User
-from routers.block_schedules import resolve_schedule_for_agent, is_within_schedule
+from models.models import Agent, Metric, Disk, Event, AlertConfig, BlockedSite, AgentChangeLog, AssignmentLog, User, BlockSchedule, NetworkGateConfig
+from routers.block_schedules import is_within_schedule, _local_now
 from routers.blocked_sites import resolve_domains_for_agent, resolve_all_configured_domains
-from routers.network_gate import is_network_allowed
 
 router = APIRouter(prefix="/api/agents", tags=["agents"])
 
@@ -531,7 +530,54 @@ def get_global_events(
         })
     return result
 
-# ── Lista de bloqueo (consultada periódicamente por el agente) ─────────────
+# ── Lista de bloqueo (consultada cada 10s por CADA agente) ──────────────────
+# Sin caché, esto eran 4-5 consultas a la DB por llamada (sitios bloqueados +
+# horario + red permitida): a 200 equipos sondeando cada 10s son ~80-100
+# consultas/segundo sostenidas contra Postgres en una máquina de 2GB de RAM.
+# Se cachea en memoria lo que es IGUAL para todos los agentes (sitios,
+# horarios, red permitida) y se refresca cada BL_CACHE_REFRESH_SEC — el único
+# query que sigue siendo por-request es encontrar AL agente puntual (rápido,
+# por índice de serial_number/hostname).
+_bl_cache_lock = threading.Lock()
+_bl_cache = {"ts": 0.0, "active_sites": [], "schedules": [], "gate_enabled": False, "gate_networks": set()}
+BL_CACHE_REFRESH_SEC = 5
+
+def _get_bl_cache(db: Session):
+    with _bl_cache_lock:
+        if _time.time() - _bl_cache["ts"] > BL_CACHE_REFRESH_SEC:
+            try:
+                gate = db.query(NetworkGateConfig).filter(NetworkGateConfig.id == "default").first()
+                _bl_cache.update({
+                    "ts": _time.time(),
+                    "active_sites": db.query(BlockedSite).filter(BlockedSite.active == True).all(),
+                    "schedules": db.query(BlockSchedule).all(),
+                    "gate_enabled": bool(gate.enabled) if gate else False,
+                    "gate_networks": {n.strip().lower() for n in (gate.networks or [])} if gate else set(),
+                })
+            except Exception as e:
+                print(f"[blocklist-cache] error refrescando (se sigue usando el anterior): {e}")
+        return _bl_cache
+
+def _resolve_schedule_cached(agent, schedules):
+    """Misma prioridad y semantica que resolve_schedule_for_agent, pero
+    resuelta en memoria contra la lista ya cacheada en vez de consultar la DB."""
+    if agent:
+        agent_s = next((s for s in schedules if s.agent_id == agent.id), None)
+        if agent_s and (agent_s.expires_at is None or agent_s.expires_at > _local_now(agent_s.timezone)):
+            return agent_s
+        if agent.sede_id:
+            sede_s = next((s for s in schedules if s.sede_id == agent.sede_id), None)
+            if sede_s:
+                return sede_s
+    return next((s for s in schedules if s.agent_id is None and s.sede_id is None), None)
+
+def _is_network_allowed_cached(ssid: Optional[str], cache: dict) -> bool:
+    if not cache["gate_enabled"]:
+        return True
+    if not ssid:
+        return False
+    return ssid.strip().lower() in cache["gate_networks"]
+
 @router.get("/blocklist")
 def get_blocklist(hostname: str, ssid: Optional[str] = Query(None), serial: Optional[str] = Query(None), db: Session = Depends(get_db)):
     # El hostname puede repetirse entre equipos distintos (ver receive_metrics),
@@ -544,12 +590,13 @@ def get_blocklist(hostname: str, ssid: Optional[str] = Query(None), serial: Opti
     if not agent:
         agent = db.query(Agent).filter(Agent.hostname == hostname).first()
 
-    active_sites = db.query(BlockedSite).filter(BlockedSite.active == True).all()
+    cache = _get_bl_cache(db)
+    active_sites = cache["active_sites"]
     all_domains = resolve_all_configured_domains(agent, active_sites)
     domains = resolve_domains_for_agent(agent, active_sites)
 
-    schedule = resolve_schedule_for_agent(agent, db)
-    should_block = is_within_schedule(schedule) and is_network_allowed(ssid, db)
+    schedule = _resolve_schedule_cached(agent, cache["schedules"])
+    should_block = is_within_schedule(schedule) and _is_network_allowed_cached(ssid, cache)
 
     if not should_block:
         domains = []
