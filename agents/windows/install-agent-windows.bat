@@ -66,9 +66,15 @@ if "%HAD_PREVIOUS%"=="1" (
     powershell -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*smartmonitor-push.ps1*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }" >nul 2>&1
     echo [OK] Procesos previos detenidos
 
-    REM 4) Restaurar el DNS del sistema si el agente lo habia tomado (127.0.0.1)
-    powershell -ExecutionPolicy Bypass -Command "$adapters = Get-DnsClientServerAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.ServerAddresses -contains '127.0.0.1' }; foreach ($a in $adapters) { try { Set-DnsClientServerAddress -InterfaceIndex $a.InterfaceIndex -ResetServerAddresses } catch {} }" >nul 2>&1
-    echo [OK] DNS del sistema restaurado (si aplica)
+    REM 4) Restaurar el DNS a automatico en todas las interfaces activas -
+    REM antes esto buscaba especificamente 127.0.0.1 (de una arquitectura
+    REM vieja de sinkhole local), pero el agente actual apunta el DNS al
+    REM servidor publico o al tunel WireGuard, nunca a localhost, asi que
+    REM ese filtro nunca coincidia con nada real. Se resetea todo sin
+    REM condicionar a que IP tenga puesta ahora - mismo criterio que ya usa
+    REM el desinstalador.
+    powershell -ExecutionPolicy Bypass -Command "$adapters = Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' }; foreach ($a in $adapters) { try { Set-DnsClientServerAddress -InterfaceIndex $a.InterfaceIndex -ResetServerAddresses -ErrorAction SilentlyContinue } catch {} }; ipconfig /flushdns | Out-Null" >nul 2>&1
+    echo [OK] DNS del sistema restaurado a automatico
 
     REM 5) Borrar el directorio de instalacion anterior
     if exist "%INSTALL_DIR%" (
