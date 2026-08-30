@@ -986,6 +986,27 @@ def ensure_local_dns():
             write_log(f"WARN: no se pudo fijar el DNS local en {name}: {e}")
 
 
+def restore_dhcp_dns():
+    """Restaura el DNS de los adaptadores de red a DHCP automatico.
+    Se ejecuta de forma automatica cuando el agente detecta que la red actual
+    no tiene conectividad con el servidor central de SmartMonitor (red externa/bloqueada),
+    impidiendo que el equipo pierda acceso a Internet o sufra desconexiones de Wi-Fi."""
+    for name in _adapter_friendly_names():
+        try:
+            subprocess.run(
+                ["netsh.exe", "interface", "ipv4", "set", "dnsservers",
+                 f"name={name}", "source=dhcp"],
+                capture_output=True, timeout=10, creationflags=subprocess.CREATE_NO_WINDOW)
+            subprocess.run(
+                ["netsh.exe", "interface", "ipv6", "set", "dnsservers",
+                 f"name={name}", "source=dhcp"],
+                capture_output=True, timeout=10, creationflags=subprocess.CREATE_NO_WINDOW)
+            write_log(f"DNS DHCP restaurado en adaptador: {name}")
+        except Exception as e:
+            write_log(f"WARN: no se pudo restaurar DNS DHCP en {name}: {e}")
+
+
+
 def ensure_hosts_entry(hostname, ip):
     """Mantiene una linea idempotente en el archivo hosts (mismo patron de
     linea-marcada que ya usa el agente Linux en resolv.conf) - le da a
@@ -1428,6 +1449,9 @@ def main():
 
     write_log(f"Loop iniciado - metricas cada {interval}s, bloqueo cada {blocklist_poll_sec}s")
 
+    _in_dhcp_fallback = False
+    _consecutive_server_failures = 0
+
     while not _stop_event.is_set():
         try:
             if time.time() - last_metrics >= interval:
@@ -1454,17 +1478,6 @@ def main():
             # quedaba en un valor viejo para siempre.
             tailnet_ip = get_tailscale_ip()
 
-            # 15s, no 60s: bug real visto en produccion (LAP-ATAFUR) - el
-            # servicio de WLAN de Windows puede reiniciarse solo cada pocos
-            # minutos (driver de red inestable), lo que desloguea Tailscale
-            # por completo. Mientras el tunel esta caido, cloudflared pasa
-            # automaticamente a un DNS publico de respaldo para no dejar el
-            # equipo sin poder navegar - pero eso tambien salta el bloqueo de
-            # contenido mientras dura. Reintentar cada 60s dejaba esa ventana
-            # de "bloqueo salteado" mas larga de lo necesario; 15s la acorta
-            # sin ser agresivo (Tailscale ya reconecta solo en unos segundos
-            # una vez que WLAN vuelve, lo que faltaba era que ESTE agente se
-            # enterara y volviera a pedir un pre-auth key mas rapido).
             if (not tailnet_ip or not tailnet_server_ip) and time.time() - last_wireguard_retry >= 15:
                 setup_wireguard_tunnel()
                 last_wireguard_retry = time.time()
@@ -1474,15 +1487,23 @@ def main():
                 ensure_hosts_entry(DOH_HOSTNAME, current_hosts_ip)
                 last_hosts_ip = current_hosts_ip
 
-            # get_blocklist() ya no decide nada del DNS local (fijo a
-            # 127.0.0.1 desde el arranque) - solo reporta el SSID actual, que
-            # el gate del lado servidor usa para el camino DoH.
+            # get_blocklist() reporta el SSID actual y sirve como heartbeat de conectividad.
             block_result = get_blocklist()
             if block_result is not None:
                 write_log(f"BLOCKLIST should_block={block_result['ShouldBlock']} "
                           f"all_domains={len(block_result['AllDomains'])}")
+                _consecutive_server_failures = 0
+                if _in_dhcp_fallback:
+                    write_log("Conectividad con servidor restablecida. Reaplicando DNS local 127.0.0.1 y protecciones.")
+                    ensure_local_dns()
+                    _in_dhcp_fallback = False
             else:
-                write_log("BLOCKLIST sin respuesta del servidor (None)")
+                _consecutive_server_failures += 1
+                write_log(f"BLOCKLIST sin respuesta del servidor (intento fallido {_consecutive_server_failures})")
+                if _consecutive_server_failures >= 2 and not _in_dhcp_fallback:
+                    write_log("WARN: Servidor no alcanzable en la red actual. Activando fallback automatico de DNS a DHCP para evitar desconexion de Wi-Fi...")
+                    restore_dhcp_dns()
+                    _in_dhcp_fallback = True
 
             write_log(f"OK - siguiente revision de red en {blocklist_poll_sec}s")
         except Exception as e:
@@ -1495,39 +1516,29 @@ def main():
             if _network_changed.is_set():
                 _network_changed.clear()
                 write_log("Cambio de red detectado - revisando de inmediato")
-                # Bug real reportado por un usuario: en una red el equipo
-                # navegaba bien, al cambiar a otra red dejaba de poder
-                # navegar del todo (no solo se saltaba el bloqueo, se
-                # rompia la resolucion DNS entera). Causa: cloudflared
-                # mantiene una conexion HTTPS persistente al upstream DoH -
-                # ese cambio de red (nueva puerta de enlace/interfaz) puede
-                # dejarla en un estado roto/colgado sin que el PROCESO en
-                # si llegue a caerse, asi que supervise_cloudflared() (que
-                # solo reinicia si el proceso MUERE) nunca se enteraba.
-                # Como el DNS de Windows queda fijo a 127.0.0.1 (ver
-                # ensure_local_dns()), sin cloudflared respondiendo ahi
-                # NINGUN nombre resuelve - no es un problema del sitio
-                # bloqueado, es que no hay DNS en absoluto. Forzar el
-                # reinicio aca asegura que abra una conexion nueva ya
-                # sobre la red actual en vez de esperar a que el usuario
-                # reinicie el equipo o el servicio a mano.
                 if _cloudflared_proc is not None and _cloudflared_proc.poll() is None:
                     write_log("Reiniciando cloudflared por el cambio de red (conexion vieja puede haber quedado colgada)")
                     try:
                         _cloudflared_proc.terminate()
                     except Exception as e:
                         write_log(f"WARN: no se pudo reiniciar cloudflared tras cambio de red: {e}")
-                # ensure_local_dns() solo corria una vez, al arrancar main() -
-                # un adaptador que no existia todavia en ese momento (ej. un
-                # Ethernet por USB/dock que se conecta despues) se quedaba
-                # sin el DNS fijo a 127.0.0.1 para siempre. Reaplicarlo aca
-                # es idempotente (no hace nada distinto en un adaptador que
-                # ya esta bien configurado) y cubre ese caso sin tener que
-                # reiniciar el servicio a mano.
-                ensure_local_dns()
+                
                 _stop_event.wait(3)  # debounce: dar tiempo a que la SSID/IP se asienten
+                test_block = get_blocklist()
+                if test_block is None:
+                    write_log("Nueva red sin conectividad directa al servidor central. Aplicando fallback a DHCP.")
+                    restore_dhcp_dns()
+                    _in_dhcp_fallback = True
+                    _consecutive_server_failures = 1
+                else:
+                    write_log("Nueva red con conectividad al servidor central. Aplicando DNS local 127.0.0.1.")
+                    ensure_local_dns()
+                    _in_dhcp_fallback = False
+                    _consecutive_server_failures = 0
                 break
             waited += 2
+
+    write_log("Loop principal detenido (SvcStop)")
 
     write_log("Loop principal detenido (SvcStop)")
 

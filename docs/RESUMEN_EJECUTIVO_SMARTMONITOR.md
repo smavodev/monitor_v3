@@ -43,6 +43,7 @@ La plataforma permite al departamento de TI controlar, auditar y proteger estaci
 ```
 
 ### 2.1 Backend y Servidor Central (`/server/app`)
+
 - **Tecnologías:** Python (FastAPI), SQLAlchemy ORM, PostgreSQL, Docker & Docker Compose.
 - **Monitoreo & Telemetría:** Recepción periódica de métricas de CPU, RAM, almacenamiento (discos físicos y particiones), batería, red, software instalado, parches del SO, números de serie e IP pública/privada.
 - **Filtro DNS y Proxy SNI/TLS (`dns_blocker.py` / `tls_ca.py`):** Servidor DNS integrado que filtra peticiones por categorías (redes sociales, ocio, contenido no permitido), por horarios (`block_schedules`) y por sedes/equipos.
@@ -51,6 +52,7 @@ La plataforma permite al departamento de TI controlar, auditar y proteger estaci
 - **Gestión de Identidad y Accesos (IAM):** Autenticación JWT, control de acceso basado en roles por sección (`RolePermission`), políticas avanzadas de contraseñas y registro de auditoría de logins (`LoginAttempt`).
 
 ### 2.2 Agentes de Monitoreo (`/agents`)
+
 - **Agente Windows (`smartmonitor_agent.py` + `smartmonitor_tray.py`):**
   - Proceso de servicio en segundo plano con icono en la bandeja del sistema.
   - Recolección profunda de hardware vía WMI y `psutil` (Slots de RAM, discos físicos, estado de batería, software instalado).
@@ -59,6 +61,7 @@ La plataforma permite al departamento de TI controlar, auditar y proteger estaci
   - Script optimizado para ejecución periódica en servidores o computadoras Linux mediante `cron` o `systemd`.
 
 ### 2.3 Despliegue Automatizado (`setup.sh`)
+
 - Script de instalación de un solo comando en Linux con verificaciones automáticas:
   1. Limpieza de instalaciones previas.
   2. Verificación e instalación de Docker y Docker Compose.
@@ -70,6 +73,7 @@ La plataforma permite al departamento de TI controlar, auditar y proteger estaci
 ## 3. Diagnóstico Técnico: Inestabilidad y Desconexión de Wi-Fi en Redes Externas
 
 ### 3.1 Descripción del Problema
+
 Al trasladar un equipo a una red Wi-Fi secundaria (hogar, hotspot móvil, cliente), la conexión Wi-Fi sufre desconexiones o pierde acceso a Internet, requiriendo múltiples reinicios del equipo.
 
 ### 3.2 Causas Raíz Identificadas en el Código Fuente
@@ -93,7 +97,9 @@ Al trasladar un equipo a una red Wi-Fi secundaria (hogar, hotspot móvil, client
 ## 4. Plan de Acción y Soluciones
 
 ### 4.1 Solución Inmediata para Usuarios (Sin reiniciar el equipo)
+
 Restablecer la configuración DNS automática del adaptador Wi-Fi vía CMD (como Administrador):
+
 ```cmd
 netsh interface ipv4 set dnsservers name="Wi-Fi" source=dhcp
 netsh interface ipv6 set dnsservers name="Wi-Fi" source=dhcp
@@ -101,9 +107,11 @@ ipconfig /flushdns
 ```
 
 ### 4.2 Solución con Códigos de Pausa
+
 Solicitar un **Código de Pausa Temporal** desde la consola del administrador e ingresarlo en el agente tray para suspender temporalmente la redirección DNS y la VPN mientras se está en redes externas.
 
 ### 4.3 Recomendaciones de Desarrollo (Mejoras en el Agente)
+
 1. **Implementar Fallback Automático a DHCP:** Si el agente no detecta conectividad con el servidor central tras 30 segundos de cambiar de red, restaurar temporalmente la interfaz a `source=dhcp` para garantizar la navegabilidad.
 2. **Suavizar la frecuencia de supervisión de `cloudflared`:** Ajustar el tiempo de backoff exponencial en reintentos para evitar que antivirus corporativos bloqueen la tarjeta de red.
 3. **Validar alcance de la VPN antes de forzar `hosts`:** Verificar la conectividad antes de sobrescribir el archivo `hosts` del sistema.
@@ -114,10 +122,10 @@ Solicitar un **Código de Pausa Temporal** desde la consola del administrador e 
 
 | Archivo | Ruta | Función Principal |
 | :--- | :--- | :--- |
-| **`main.py`** | [server/app/main.py](file:///c:/Users/Smavodev/Desktop/SmartBoleta%20Monitoreo/smartmonitor3/server/app/main.py) | Entrypoint del servidor FastAPI, migraciones y API REST. |
-| **`dns_blocker.py`** | [server/app/dns_blocker.py](file:///c:/Users/Smavodev/Desktop/SmartBoleta%20Monitoreo/smartmonitor3/server/app/dns_blocker.py) | Servidor DNS asíncrono y motor de filtrado web por categorías/horarios. |
-| **`models.py`** | [server/app/models/models.py](file:///c:/Users/Smavodev/Desktop/SmartBoleta%20Monitoreo/smartmonitor3/server/app/models/models.py) | Esquemas de base de datos (Agentes, Activos ITAM, Roles, Historiales). |
-| **`smartmonitor_agent.py`** | [agents/windows/nuevo-por-compilar/smartmonitor_agent.py](file:///c:/Users/Smavodev/Desktop/SmartBoleta%20Monitoreo/smartmonitor3/agents/windows/nuevo-por-compilar/smartmonitor_agent.py) | Agente Windows, telemetría WMI/psutil, gestión de `cloudflared` y DNS. |
-| **`smartmonitor_tray.py`** | [agents/windows/nuevo-por-compilar/smartmonitor_tray.py](file:///c:/Users/Smavodev/Desktop/SmartBoleta%20Monitoreo/smartmonitor3/agents/windows/nuevo-por-compilar/smartmonitor_tray.py) | Interface de usuario en la bandeja del sistema (System Tray). |
-| **`smartmonitor-push.py`** | [agents/linux/smartmonitor-push.py](file:///c:/Users/Smavodev/Desktop/SmartBoleta%20Monitoreo/smartmonitor3/agents/linux/smartmonitor-push.py) | Agente de reporte de métricas para Linux. |
-| **`setup.sh`** | [setup.sh](file:///c:/Users/Smavodev/Desktop/SmartBoleta%20Monitoreo/smartmonitor3/setup.sh) | Script de instalación y despliegue automatizado del servidor. |
+| **`main.py`** | [server/app/main.py](../server/app/main.py) | Entrypoint del servidor FastAPI, migraciones y API REST. |
+| **`dns_blocker.py`** | [server/app/dns_blocker.py](../server/app/dns_blocker.py) | Servidor DNS asíncrono y motor de filtrado web por categorías/horarios. |
+| **`models.py`** | [server/app/models/models.py](../server/app/models/models.py) | Esquemas de base de datos (Agentes, Activos ITAM, Roles, Historiales). |
+| **`smartmonitor_agent.py`** | [agents/windows/nuevo-por-compilar/smartmonitor_agent.py](../agents/windows/nuevo-por-compilar/smartmonitor_agent.py) | Agente Windows, telemetría WMI/psutil, gestión de `cloudflared` y DNS. |
+| **`smartmonitor_tray.py`** | [agents/windows/nuevo-por-compilar/smartmonitor_tray.py](../agents/windows/nuevo-por-compilar/smartmonitor_tray.py) | Interface de usuario en la bandeja del sistema (System Tray). |
+| **`smartmonitor-push.py`** | [agents/linux/smartmonitor-push.py](../agents/linux/smartmonitor-push.py) | Agente de reporte de métricas para Linux. |
+| **`setup.sh`** | [setup.sh](../setup.sh) | Script de instalación y despliegue automatizado del servidor. |
