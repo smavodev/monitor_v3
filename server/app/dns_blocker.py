@@ -23,7 +23,7 @@ import os
 import socket
 import time
 import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from socketserver import ThreadingMixIn
 
 from dnslib import DNSRecord, QTYPE, RR, A
@@ -34,7 +34,15 @@ from models.models import Agent, BlockedSite
 from routers.blocked_sites import resolve_domains_for_agent, resolve_all_configured_domains
 from routers.block_schedules import _local_now
 from routers.block_attempts import upsert_attempts
+from routers.agents import resolve_should_block, get_last_ssid
 import tls_ca
+
+
+# Interruptor de emergencia para el endpoint DoH nuevo (RFC 8484): permite
+# apagarlo al instante (reinicio del contenedor con la env var en "false")
+# sin tener que revertir código, si algo sale mal en producción.
+DOH_ENDPOINT_ENABLED = os.getenv("DOH_ENDPOINT_ENABLED", "true").lower() == "true"
+DOH_PATH = "/dns-query"
 
 
 UPSTREAM_DNS = os.getenv("DNS_UPSTREAM", "1.1.1.1")
@@ -97,7 +105,7 @@ def _build_state():
             # -no la asigna un router compartido-, asi que no hace falta
             # unirla con nadie: se mapea directo, sin ambiguedad posible.
             if a.tailnet_ip:
-                by_ip[a.tailnet_ip] = {"agent_id": a.id, "blocked": blocked, "all": all_domains}
+                by_ip[a.tailnet_ip] = {"agent_id": a.id, "agent": a, "blocked": blocked, "all": all_domains}
 
             existing = by_ip.get(a.ip)
             if existing:
@@ -114,8 +122,9 @@ def _build_state():
                 existing["blocked"] |= blocked
                 existing["all"] |= all_domains
                 existing["agent_id"] = a.id
+                existing["agent"] = a
             else:
-                by_ip[a.ip] = {"agent_id": a.id, "blocked": blocked, "all": all_domains}
+                by_ip[a.ip] = {"agent_id": a.id, "agent": a, "blocked": blocked, "all": all_domains}
 
         return {
             "ts": time.time(),
@@ -207,58 +216,81 @@ def _flush_attempts():
                     _attempt_counts[key] = _attempt_counts.get(key, 0) + count
 
 
+def _forward_upstream(request):
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(3)
+        sock.sendto(request.pack(), (UPSTREAM_DNS, 53))
+        data, _ = sock.recvfrom(4096)
+        sock.close()
+        reply = DNSRecord.parse(data)
+        for rr in reply.rr:
+            if rr.ttl > MAX_FORWARDED_TTL:
+                rr.ttl = MAX_FORWARDED_TTL
+        return reply
+    except Exception:
+        return request.reply()
+
+
+def resolve_dns_query(request, client_ip, *, apply_gate: bool):
+    """Punto único de resolución, reusado por el resolver UDP:53 de siempre
+    (BlockResolver.resolve, apply_gate=False) y por el endpoint DoH nuevo
+    (apply_gate=True). `apply_gate=True` evalúa además horario/pausa/red
+    permitida (resolve_should_block, en routers/agents.py) antes de decidir
+    si bloquear — necesario para el camino DoH porque ahí el DNS del cliente
+    apunta al server para siempre, sin apagarse nunca por su cuenta como
+    hace hoy el agente viejo vía Set-CentralDns/Restore-Dns."""
+    try:
+        qname = str(request.q.qname).rstrip(".")
+        qtype = request.q.qtype
+    except Exception:
+        return request.reply()
+
+    state = _get_state()
+    entry = state["by_ip"].get(client_ip) if client_ip else None
+    if entry:
+        blocked_set, all_set, agent_id, agent_obj = entry["blocked"], entry["all"], entry["agent_id"], entry.get("agent")
+    else:
+        # IP no asociada a ningún agente conocido: fallback seguro a la
+        # blocklist global (no se pueden aplicar reglas de área/equipo
+        # para un dispositivo que no sabemos quién es).
+        blocked_set, all_set, agent_id, agent_obj = state["global_blocked"], state["global_all"], None, None
+
+    qname_l = qname.lower()
+
+    if apply_gate and agent_obj is not None:
+        ssid = get_last_ssid(agent_id)
+        if not resolve_should_block(agent_obj, ssid):
+            blocked_set = set()  # horario/pausa/red-permitida dice "dejar pasar todo ahora"
+
+    if _domain_matches(qname_l, blocked_set):
+        _record_attempt(agent_id, qname_l, True)
+        reply = request.reply()
+        if qtype == QTYPE.A:
+            reply.add_answer(RR(qname, QTYPE.A, ttl=30, rdata=A(REDIRECT_IP)))
+        return reply
+
+    # No bloqueado ahora mismo, pero si está en la config del equipo
+    # (Global+Área+Equipo) es que una excepción/horario/red lo dejó
+    # pasar: lo registramos igual para que quede visible en los reportes.
+    if agent_id and _domain_matches(qname_l, all_set):
+        _record_attempt(agent_id, qname_l, False)
+
+    return _forward_upstream(request)
+
+
 class BlockResolver(BaseResolver):
     def resolve(self, request, handler):
-        try:
-            qname = str(request.q.qname).rstrip(".")
-            qtype = request.q.qtype
-        except Exception:
-            return request.reply()
-
         client_ip = None
         try:
             client_ip = handler.client_address[0]
         except Exception:
             pass
-
-        state = _get_state()
-        entry = state["by_ip"].get(client_ip) if client_ip else None
-        if entry:
-            blocked_set, all_set, agent_id = entry["blocked"], entry["all"], entry["agent_id"]
-        else:
-            # IP no asociada a ningún agente conocido: fallback seguro a la
-            # blocklist global (no se pueden aplicar reglas de área/equipo
-            # para un dispositivo que no sabemos quién es).
-            blocked_set, all_set, agent_id = state["global_blocked"], state["global_all"], None
-
-        qname_l = qname.lower()
-
-        if _domain_matches(qname_l, blocked_set):
-            _record_attempt(agent_id, qname_l, True)
-            reply = request.reply()
-            if qtype == QTYPE.A:
-                reply.add_answer(RR(qname, QTYPE.A, ttl=30, rdata=A(REDIRECT_IP)))
-            return reply
-
-        # No bloqueado ahora mismo, pero si está en la config del equipo
-        # (Global+Área+Equipo) es que una excepción/horario/red lo dejó
-        # pasar: lo registramos igual para que quede visible en los reportes.
-        if agent_id and _domain_matches(qname_l, all_set):
-            _record_attempt(agent_id, qname_l, False)
-
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            sock.settimeout(3)
-            sock.sendto(request.pack(), (UPSTREAM_DNS, 53))
-            data, _ = sock.recvfrom(4096)
-            sock.close()
-            reply = DNSRecord.parse(data)
-            for rr in reply.rr:
-                if rr.ttl > MAX_FORWARDED_TTL:
-                    rr.ttl = MAX_FORWARDED_TTL
-            return reply
-        except Exception:
-            return request.reply()
+        # apply_gate=False a propósito: los clientes de este camino UDP
+        # (Linux, .ps1 viejo en transición) ya deciden apuntar su DNS aquí
+        # o no según should_block de /api/agents/blocklist, así que aplicar
+        # el gate otra vez aquí sería lógica duplicada sin beneficio.
+        return resolve_dns_query(request, client_ip, apply_gate=False)
 
 
 BLOCK_HTML = """
@@ -325,7 +357,15 @@ ADMIN_PANEL_DOMAIN = os.getenv("ADMIN_PANEL_DOMAIN")
 
 
 class _BlockHandler(BaseHTTPRequestHandler):
+    # Puerto 80 queda expuesto a todo internet (lo tocan bots/scanners todo
+    # el tiempo, no solo agentes reales); sin timeout, una conexión que se
+    # queda a medias (o nunca manda el request) se cuelga esperando para
+    # siempre y - al no ser threaded antes - trababa el servidor entero.
+    timeout = 10
+
     def do_GET(self):
+        if DOH_ENDPOINT_ENABLED and self.path.startswith(DOH_PATH):
+            return self._handle_doh_get()
         if self.path == CA_CERT_PATH:
             self.send_response(200)
             self.send_header("Content-Type", "application/x-x509-ca-cert")
@@ -344,8 +384,91 @@ class _BlockHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(BLOCK_HTML.encode("utf-8"))
 
+    def do_POST(self):
+        if DOH_ENDPOINT_ENABLED and self.path == DOH_PATH:
+            return self._handle_doh_post()
+        self.send_error(404)
+
+    # ── DNS-over-HTTPS (RFC 8484) — usado por cloudflared en el agente
+    # Windows nuevo (proxy-dns --upstream), sirviéndose sobre los mismos
+    # listeners HTTP(:80)/HTTPS(:443, SNI) que ya corren para la página de
+    # bloqueo. El formato del mensaje (wire format) es idéntico al DNS
+    # clásico, así que se reusan directo DNSRecord.parse()/.pack().
+    def _handle_doh_get(self):
+        from urllib.parse import urlparse, parse_qs
+        import base64
+        qs = parse_qs(urlparse(self.path).query)
+        b64 = qs.get("dns", [""])[0]
+        b64 += "=" * (-len(b64) % 4)  # restaura el padding que RFC 8484 pide omitir
+        try:
+            wire = base64.urlsafe_b64decode(b64)
+            req = DNSRecord.parse(wire)
+        except Exception:
+            return self.send_error(400)
+        reply = resolve_dns_query(req, self.client_address[0], apply_gate=True)
+        self._send_dns_message(reply.pack())
+
+    def _handle_doh_post(self):
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+        except ValueError:
+            length = 0
+        body = self.rfile.read(length) if length else b""
+        try:
+            req = DNSRecord.parse(body)
+        except Exception:
+            return self.send_error(400)
+        reply = resolve_dns_query(req, self.client_address[0], apply_gate=True)
+        self._send_dns_message(reply.pack())
+
+    def _send_dns_message(self, wire: bytes):
+        self.send_response(200)
+        self.send_header("Content-Type", "application/dns-message")
+        self.send_header("Content-Length", str(len(wire)))
+        self.end_headers()
+        self.wfile.write(wire)
+
     def log_message(self, *args):
         pass
+
+
+def _read_proxy_protocol_v1(sock):
+    """Lee la línea PROXY protocol v1 (texto) que nginx antepone a los bytes
+    TLS cuando este server corre detrás de un proxy propio (ver
+    BLOCK_HTTPS_BIND / /etc/nginx/stream.d/*.conf, directiva "proxy_protocol
+    on" en el salto que reenvía a este puerto). Formato:
+    "PROXY TCP4 <src_ip> <dst_ip> <src_port> <dst_port>\\r\\n" (o TCP6).
+
+    Sin esto, self.client_address SIEMPRE es 127.0.0.1 (la propia nginx
+    conectándose localmente en el último salto), nunca el equipo real - bug
+    real encontrado en producción: por esto el gate de pausa/horario/red en
+    resolve_dns_query() (apply_gate=True, camino DoH) nunca encontraba el
+    agente correcto y una pausa activa no tenía ningún efecto sin importar
+    cuánto se esperara.
+
+    Se lee byte a byte (no con un recv(N) con buffer) porque el handshake
+    TLS empieza inmediatamente después del \\r\\n, en el MISMO socket - un
+    recv de más se comería bytes del ClientHello y rompería el handshake.
+    Devuelve (ip, puerto) o None si no se pudo leer/parsear (nunca debería
+    pasar cuando BLOCK_HTTPS_BIND está seteado, ya que ahí SIEMPRE hay un
+    proxy nginx del otro lado mandándolo)."""
+    try:
+        buf = b""
+        while not buf.endswith(b"\n") and len(buf) < 108:  # tope real del spec de PROXY protocol v1
+            b = sock.recv(1)
+            if not b:
+                return None
+            buf += b
+        line = buf.decode("ascii", errors="strict").strip()
+        if not line.startswith("PROXY "):
+            return None
+        parts = line.split()
+        if len(parts) < 5 or parts[1] not in ("TCP4", "TCP6"):
+            return None
+        return parts[2], int(parts[4])
+    except Exception as e:
+        print(f"[DNSBlocker] WARN: no se pudo leer PROXY protocol: {e}")
+        return None
 
 
 class _TLSHTTPServer(ThreadingMixIn, HTTPServer):
@@ -371,6 +494,15 @@ class _TLSHTTPServer(ThreadingMixIn, HTTPServer):
 
     def get_request(self):
         sock, addr = super().get_request()
+        # BLOCK_HTTPS_BIND solo se define en despliegues detrás de un proxy
+        # propio (ver _run_block_page_tls) - ahí SIEMPRE hay un PROXY
+        # protocol esperando antes de los bytes TLS. Sin BLOCK_HTTPS_BIND
+        # (bind público directo, sin nginx de por medio) no hay que leer
+        # nada extra: addr ya es la IP real del cliente.
+        if BLOCK_HTTPS_BIND:
+            real = _read_proxy_protocol_v1(sock)
+            if real:
+                addr = real
         ssl_sock = self._base_ctx.wrap_socket(sock, server_side=True)
         return ssl_sock, addr
 
@@ -404,7 +536,8 @@ def _run_block_page():
     last_err = None
     for addr in ("0.0.0.0", REDIRECT_IP):
         try:
-            httpd = HTTPServer((addr, BLOCK_HTTP_PORT), _BlockHandler)
+            httpd = ThreadingHTTPServer((addr, BLOCK_HTTP_PORT), _BlockHandler)
+            httpd.daemon_threads = True
             print(f"[DNSBlocker] Página de bloqueo iniciada en {addr}:{BLOCK_HTTP_PORT}")
             httpd.serve_forever()
             return

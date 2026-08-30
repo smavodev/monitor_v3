@@ -29,8 +29,19 @@ DEFAULT_TECHNICIAN_PERMISSIONS = {
 
 
 def seed_default_roles(db: Session) -> dict:
-    """Crea (si no existen) los roles Admin y Técnico, y devuelve sus ids
-    ({'admin': id, 'technician': id}) para poder migrar usuarios viejos."""
+    """Crea (si no existen) los roles Admin, Técnico y Usuario, y devuelve sus
+    ids ({'admin': id, 'technician': id, 'user': id}) para poder migrar
+    usuarios viejos.
+
+    "Usuario" (sin permisos en ninguna sección) es el rol pensado para
+    cuentas que solo existen para asignarles equipos (ej. un empleado sin
+    rol de TI) - nunca inician sesión de verdad. Antes no se sembraba acá:
+    en producción alguien lo había creado a mano desde la pantalla de Roles,
+    así que ya existía, pero una instalación nueva no lo tenía y el
+    selector de rol al crear un usuario cambiaba por defecto a "Admin"
+    (el primero por fecha de creación) si nadie lo tocaba - ver
+    openNewUser()/_populateUserRolePicker() en el frontend, que ahora
+    selecciona este rol por nombre en vez de depender del orden."""
     ids = {}
     admin = db.query(Role).filter(Role.name == "Admin").first()
     if not admin:
@@ -55,6 +66,16 @@ def seed_default_roles(db: Session) -> dict:
             db.add(RolePermission(role_id=tech.id, section=section, level=level))
         db.commit()
     ids["technician"] = tech.id
+
+    usuario = db.query(Role).filter(Role.name == "Usuario").first()
+    if not usuario:
+        usuario = Role(name="Usuario", is_admin_role=False)
+        db.add(usuario)
+        db.commit()
+        db.refresh(usuario)
+        # sin RolePermission - "none" en todas las secciones a propósito
+    ids["user"] = usuario.id
+
     return ids
 
 

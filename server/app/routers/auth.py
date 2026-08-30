@@ -1,16 +1,19 @@
 import random
+import secrets
 import string
-from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException
+from datetime import datetime, timedelta
+from fastapi import APIRouter, Depends, HTTPException, Request, Query
 from sqlalchemy.orm import Session
+from sqlalchemy import desc
 from pydantic import BaseModel
 from core.db import get_db, verify_password, create_token, get_current_user, hash_password
 from core.permissions import require_permission, get_permission_map, has_permission
-from models.models import User, PasswordPolicy, PasswordHistory, Role
+from models.models import User, PasswordPolicy, PasswordHistory, Role, LoginAttempt, PasswordResetToken
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 POLICY_ID = "default"
+RESET_TOKEN_EXPIRY_MINUTES = 30
 
 
 # ── Política de contraseñas ─────────────────────────────────────────────────
@@ -122,6 +125,7 @@ def _fmt_user(db: Session, u: User) -> dict:
         "active": u.active,
         "has_access": bool(u.has_access) if u.has_access is not None else True,
         "must_change_password": bool(u.must_change_password),
+        "is_default_admin": bool(u.is_default_admin),
     }
 
 
@@ -144,6 +148,15 @@ def _remaining_users_with_permission(db: Session, section: str, min_level: str, 
 class LoginRequest(BaseModel):
     email: str
     password: str
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: str
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str
 
 
 class UserCreate(BaseModel):
@@ -183,14 +196,43 @@ class PasswordPolicyUpdate(BaseModel):
     reuse_remember_count: int = 3
 
 
+def _client_ip(request: Request) -> str | None:
+    """IP real del cliente. El panel admin (dominio con TLS real) llega acá
+    a traves de un proxy nginx local que agrega X-Forwarded-For con la IP
+    real - solo se confia en ese header cuando la conexion TCP en si misma
+    vino de localhost (nuestro propio nginx), nunca si alguien le pega
+    directo al puerto de la app, para que no se pueda falsificar."""
+    direct_ip = request.client.host if request.client else None
+    if direct_ip in ("127.0.0.1", "::1"):
+        fwd = request.headers.get("x-forwarded-for")
+        if fwd:
+            return fwd.split(",")[0].strip()
+    return direct_ip
+
+def _log_login(db: Session, email: str, success: bool, reason: str, user_id: str, request: Request):
+    ip = _client_ip(request)
+    db.add(LoginAttempt(email=email, user_id=user_id, success=success, reason=reason, ip_address=ip))
+    db.commit()
+
 @router.post("/login")
-def login(data: LoginRequest, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == data.email, User.active == True).first()
+def login(data: LoginRequest, request: Request, db: Session = Depends(get_db)):
+    # Se busca SIN filtrar por active/has_access para poder registrar en el
+    # historial de accesos el motivo REAL del fallo (cuenta desactivada, sin
+    # acceso a consola, contraseña incorrecta) - el mensaje que ve el cliente
+    # sigue siendo siempre el mismo "Credenciales incorrectas" (no se le
+    # revela al usuario si el email existe o no), el detalle solo queda en
+    # el historial que ven los administradores.
+    user = db.query(User).filter(User.email == data.email).first()
     if not user or not verify_password(data.password, user.password):
+        _log_login(db, data.email, False, "Credenciales incorrectas", user.id if user else None, request)
+        raise HTTPException(status_code=401, detail="Credenciales incorrectas")
+    if not user.active:
+        _log_login(db, data.email, False, "Cuenta desactivada", user.id, request)
         raise HTTPException(status_code=401, detail="Credenciales incorrectas")
     if user.has_access is False:
         # Existe solo para asignarle equipos (estilo "sin acceso a consola" de
         # AWS IAM) — no puede iniciar sesión aunque la contraseña sea correcta.
+        _log_login(db, data.email, False, "Sin acceso a la consola", user.id, request)
         raise HTTPException(status_code=401, detail="Credenciales incorrectas")
 
     policy = _get_policy(db)
@@ -202,6 +244,7 @@ def login(data: LoginRequest, db: Session = Depends(get_db)):
 
     token = create_token({"sub": user.id, "name": user.name, "tv": user.token_version or 0})
     role = db.query(Role).filter(Role.id == user.role_id).first() if user.role_id else None
+    _log_login(db, data.email, True, "Inicio de sesión exitoso", user.id, request)
     return {
         "token": token,
         "role_name": role.name if role else "Sin rol",
@@ -210,6 +253,99 @@ def login(data: LoginRequest, db: Session = Depends(get_db)):
         "must_change_password": bool(user.must_change_password),
         "permissions": get_permission_map(db, user),
     }
+
+
+# ── Recuperación de contraseña por email ────────────────────────────────────
+_FORGOT_PASSWORD_GENERIC_MSG = "Si el correo existe, te enviamos un enlace para restablecer tu contraseña."
+
+
+@router.post("/forgot-password")
+def forgot_password(data: ForgotPasswordRequest, db: Session = Depends(get_db)):
+    """Sin revelar si el email existe o no (mismo criterio que /login) - la
+    respuesta es siempre la misma, exista o no una cuenta con ese correo, y
+    aunque el envío de correo mismo falle (SMTP sin configurar, etc.) - eso
+    no debe ser visible para quien pide el reset, solo queda en los logs del
+    server."""
+    user = db.query(User).filter(
+        User.email == data.email, User.active == True, User.has_access != False,
+    ).first()
+    if user:
+        # A lo sumo un token vigente a la vez, igual que los códigos de
+        # equipo (uninstall/pause) - invalida cualquier pedido anterior sin usar.
+        db.query(PasswordResetToken).filter(
+            PasswordResetToken.user_id == user.id,
+            PasswordResetToken.used_at.is_(None),
+        ).delete()
+        reset_token = secrets.token_urlsafe(32)
+        db.add(PasswordResetToken(
+            user_id=user.id, token=reset_token,
+            expires_at=datetime.utcnow() + timedelta(minutes=RESET_TOKEN_EXPIRY_MINUTES),
+        ))
+        db.commit()
+        from core.notify import send_password_reset_email_silent
+        send_password_reset_email_silent(user.name, user.email, reset_token)
+    return {"ok": True, "message": _FORGOT_PASSWORD_GENERIC_MSG}
+
+
+@router.post("/reset-password")
+def reset_password(data: ResetPasswordRequest, db: Session = Depends(get_db)):
+    rec = db.query(PasswordResetToken).filter(PasswordResetToken.token == data.token).first()
+    if not rec or rec.used_at is not None:
+        raise HTTPException(400, "El enlace no es válido o ya fue usado")
+    if rec.expires_at < datetime.utcnow():
+        raise HTTPException(400, "El enlace expiró — pedí uno nuevo desde \"¿Olvidaste tu contraseña?\"")
+    u = db.query(User).filter(User.id == rec.user_id).first()
+    if not u:
+        raise HTTPException(404, "Usuario no encontrado")
+    policy = _get_policy(db)
+    _apply_password(db, u, data.new_password, policy)
+    u.must_change_password = False
+    # Restablecer la contraseña cierra cualquier otra sesión ya iniciada -
+    # mismo criterio que "revoke_sessions" al restablecer desde Usuarios.
+    u.token_version = (u.token_version or 0) + 1
+    rec.used_at = datetime.utcnow()
+    db.commit()
+    return {"ok": True}
+
+
+# ── Historial de accesos ────────────────────────────────────────────────────
+@router.get("/login-attempts")
+def list_login_attempts(
+    email:   str  = Query(None),
+    success: bool = Query(None),
+    from_date: str = Query(None),
+    to_date:   str = Query(None),
+    limit:   int  = Query(200),
+    user = Depends(require_permission("users", "view")),
+    db: Session = Depends(get_db),
+):
+    q = db.query(LoginAttempt)
+    if email:
+        q = q.filter(LoginAttempt.email.ilike(f"%{email}%"))
+    if success is not None:
+        q = q.filter(LoginAttempt.success == success)
+    if from_date:
+        try:
+            q = q.filter(LoginAttempt.timestamp >= datetime.fromisoformat(from_date))
+        except ValueError:
+            pass
+    if to_date:
+        try:
+            q = q.filter(LoginAttempt.timestamp < datetime.fromisoformat(to_date) + timedelta(days=1))
+        except ValueError:
+            pass
+    rows = q.order_by(desc(LoginAttempt.timestamp)).limit(max(1, min(limit, 2000))).all()
+    user_ids = {r.user_id for r in rows if r.user_id}
+    users_map = {u.id: u for u in db.query(User).filter(User.id.in_(user_ids)).all()}
+    return [{
+        "id": r.id,
+        "email": r.email,
+        "user_name": (users_map[r.user_id].name if r.user_id in users_map else None),
+        "success": r.success,
+        "reason": r.reason,
+        "ip_address": r.ip_address,
+        "timestamp": r.timestamp.isoformat(),
+    } for r in rows]
 
 
 @router.get("/me")
@@ -321,6 +457,9 @@ def create_user(data: UserCreate, user=Depends(require_permission("users", "mana
     result = _fmt_user(db, new_user)
     if is_temp:
         result["temp_password"] = plain
+    if data.has_access:
+        from core.notify import send_welcome_email_silent
+        send_welcome_email_silent(data.name, data.email, plain, is_temp)
     return result
 
 
@@ -406,6 +545,8 @@ def delete_user(user_id: str, user=Depends(require_permission("users", "manage")
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
     if u.id == user.id:
         raise HTTPException(status_code=403, detail="No puedes eliminar tu propia cuenta")
+    if u.is_default_admin:
+        raise HTTPException(status_code=403, detail="El administrador por defecto no se puede eliminar desde el panel — solo puedes desactivarlo o restablecer su contraseña")
     if u.active and has_permission(db, u, "users", "manage") and _remaining_users_with_permission(db, "users", "manage", u.id) == 0:
         raise HTTPException(status_code=400, detail="No puedes eliminar al último usuario con permiso de gestión de usuarios y roles")
     db.delete(u)
