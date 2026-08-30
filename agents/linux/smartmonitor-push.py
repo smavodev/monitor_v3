@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """SmartMonitor v3 - Agente Linux (push de métricas reales)"""
 import sys; sys.dont_write_bytecode = True
-import subprocess, json, re, os, time, urllib.request, urllib.parse, hashlib
+import subprocess, json, re, os, time, urllib.request, urllib.parse, hashlib, threading
 
-SERVER    = "http://172.27.142.107:8000"   # ← IP del servidor SmartMonitor
+SERVER    = "http://monitoreo.smarthrlatam.com:8000"   # ← valor real por defecto (mismo que SMARTMONITOR_DEFAULT_SERVER_IP en install-agent-linux.sh). Antes era un placeholder que el instalador reemplazaba - un despliegue manual (copiar este .py directo, sin pasar por el instalador) lo dejaba roto con el texto literal del placeholder, sin resolver DNS. install-agent-linux.sh igual lo puede pisar con otro server via "sed -i s|^SERVER...|" si hace falta apuntar a otro.
 HOSTNAME  = os.uname().nodename           # ← auto-detecta el hostname del equipo
 AGENT_DIR = os.path.dirname(os.path.abspath(__file__))  # ← carpeta donde vive este .py
 SW_HASH_CACHE = f"{AGENT_DIR}/.sw_hash"
@@ -123,19 +123,24 @@ def setup_wireguard_tunnel():
         print(f"WARN: no se pudo configurar WireGuard: {e}")
 
 def _nm_active_connections():
-    """Nombres de las conexiones activas de NetworkManager (una por interfaz
-    con red real; se listan aparte las de docker/bridges que no aplican)."""
+    """(nombre, interfaz) de las conexiones activas de NetworkManager (una por
+    interfaz con red real; se listan aparte las de docker/bridges que no
+    aplican). Se necesita la interfaz ademas del nombre para poder aplicar
+    cambios de DNS sin reconectar (ver set_central_dns/restore_dns_central) -
+    "nmcli device reapply" pide el nombre de la interfaz, no el de la
+    conexion (pueden diferir, ej. una conexion "INDIGITAL 2.4G" sobre la
+    interfaz "wlp1s0")."""
     if not (sh("command -v nmcli") and sh("systemctl is-active NetworkManager") == "active"):
         return []
     out = sh("nmcli -t -f NAME,DEVICE connection show --active")
-    names = []
+    conns = []
     for line in out.splitlines():
         if not line.strip():
             continue
         name, _, device = line.partition(":")
         if device and not device.startswith(("docker", "br-", "veth", "lo")):
-            names.append(name)
-    return names
+            conns.append((name, device))
+    return conns
 
 def set_central_dns():
     ip = _server_dns_ip()
@@ -148,13 +153,25 @@ def set_central_dns():
         # límite de 3 que usa glibc y nunca se llega a usar. nmcli es la
         # forma correcta de fijar el DNS por conexión, y ya es idempotente
         # (no reconecta si el valor no cambió).
-        for name in conns:
+        #
+        # Bug real reportado (LAP-ISAAVEDRA): "nmcli connection up" NO solo
+        # aplica el cambio de config - fuerza una reactivacion real de la
+        # conexion (baja y vuelve a subir), que en wifi es una desconexion/
+        # reconexion de verdad, de unos segundos, perceptible en medio de
+        # una reunion. Con _watch_network_changes() disparando esto cada vez
+        # que el fingerprint SSID+gateway se movia (747 veces en ~3.5 dias en
+        # este equipo, journal mediante), cada disparo era un corte de wifi
+        # real. "nmcli device reapply <interfaz>" aplica los mismos cambios
+        # (incluido DNS) a la conexion YA activa sin bajarla - confirmado en
+        # este mismo equipo que no toca connection.timestamp (que si cambia
+        # con "connection up"), es decir no hay reactivacion real.
+        for name, device in conns:
             current = sh(f'nmcli -g ipv4.dns connection show "{name}"').strip()
             if current == ip:
                 continue
             sh(f'nmcli connection modify "{name}" ipv4.dns "{ip}" ipv4.ignore-auto-dns yes '
                f'ipv6.ignore-auto-dns yes 2>/dev/null')
-            sh(f'nmcli connection up "{name}" 2>/dev/null')
+            sh(f'nmcli device reapply "{device}" 2>/dev/null')
         return
     try:
         if sh("command -v resolvectl") or sh("command -v systemd-resolve"):
@@ -183,13 +200,15 @@ def set_central_dns():
 def restore_dns_central():
     conns = _nm_active_connections()
     if conns:
-        for name in conns:
+        # Mismo motivo que en set_central_dns(): "reapply" en vez de "up"
+        # para no forzar una reconexion real de la interfaz.
+        for name, device in conns:
             current = sh(f'nmcli -g ipv4.dns connection show "{name}"').strip()
             if not current:
                 continue
             sh(f'nmcli connection modify "{name}" ipv4.dns "" ipv4.ignore-auto-dns no '
                f'ipv6.ignore-auto-dns no 2>/dev/null')
-            sh(f'nmcli connection up "{name}" 2>/dev/null')
+            sh(f'nmcli device reapply "{device}" 2>/dev/null')
         return
     try:
         if sh("command -v resolvectl") or sh("command -v systemd-resolve"):
@@ -237,41 +256,270 @@ def block_doh_endpoints_linux():
     except Exception as e:
         print(f"WARN: no se pudo bloquear endpoints DoH: {e}")
 
+# Contraparte de disable_browser_doh_linux/block_doh_endpoints_linux: antes
+# estas dos se llamaban una sola vez al arrancar el agente y nunca se
+# deshacian, sin importar horario ni red permitida - a diferencia de
+# set_central_dns/restore_dns_central (que si respetan eso). Un equipo que
+# sale de la red de oficina se quedaba con estas 6 IPs bloqueadas por
+# iptables/nft para siempre, y si su router resolvia DNS a traves de alguna
+# de ellas (Cloudflare/Google/Quad9 son las mas comunes), perdia internet por
+# completo fuera de la oficina - mismo bug que tenia el agente de Windows.
+def enable_browser_doh_linux():
+    for base in ("/etc/chromium/policies/managed", "/etc/opt/chrome/policies/managed",
+                 "/etc/brave/policies/managed", "/opt/brave/policies/managed",
+                 "/usr/lib/brave/policies/managed",
+                 "/usr/lib/firefox/distribution", "/usr/lib64/firefox/distribution",
+                 "/opt/firefox/distribution"):
+        try:
+            path = os.path.join(base, "policies.json")
+            if os.path.exists(path):
+                os.remove(path)
+        except Exception:
+            pass
+
+def unblock_doh_endpoints_linux():
+    try:
+        for ip in DOH_IPS:
+            sh(f"iptables -D OUTPUT -d {ip} -j DROP 2>/dev/null")
+        # nft no permite borrar por coincidencia (a diferencia de iptables -D):
+        # hay que ubicar el "handle" de cada regla agregada y borrarla por eso.
+        out = sh("nft -a list chain inet filter output 2>/dev/null")
+        for line in out.splitlines():
+            if "drop" in line and "handle" in line and any(ip in line for ip in DOH_IPS):
+                m = re.search(r"handle (\d+)", line)
+                if m:
+                    sh(f"nft delete rule inet filter output handle {m.group(1)} 2>/dev/null")
+    except Exception as e:
+        print(f"WARN: no se pudo desbloquear endpoints DoH: {e}")
+
 def sh(cmd, default=""):
+    # timeout obligatorio: sin esto, un comando colgado (ej. "df" sobre un
+    # punto de montaje que dejo de responder) congela este proceso para
+    # siempre - deja de reportar metricas y de refrescar el bloqueo, aunque
+    # el DNS ya apuntado antes siga "funcionando" por inercia (lo resuelve el
+    # servidor, no este proceso), dando la falsa impresion de que el agente
+    # sigue vivo cuando en realidad esta trabado.
     try:
         r = subprocess.run(cmd, shell=True, capture_output=True, text=True,
-                           env={**os.environ, "LC_ALL":"C", "LANG":"C"})
+                           env={**os.environ, "LC_ALL":"C", "LANG":"C"}, timeout=5)
         return r.stdout.strip()
     except:
         return default
+
+def _base_disk(dev):
+    """'/dev/nvme0n1p2' -> 'nvme0n1', '/dev/sda1' -> 'sda' - el disco fisico
+    detras de una particion, para no contar cada particion como un disco
+    distinto (ej. la EFI y la raiz son particiones del MISMO disco)."""
+    name = dev.replace('/dev/', '')
+    m = re.match(r'(nvme\d+n\d+|mmcblk\d+)p\d+$', name)
+    if m: return m.group(1)
+    m = re.match(r'([a-z]+)\d+$', name)
+    if m: return m.group(1)
+    return name
+
+def _is_removable(dev):
+    """True si el disco detras de esta particion es removible (USB, tarjeta
+    SD, etc.) - esos no cuentan como 'otro disco fisico' del equipo."""
+    try:
+        return open(f"/sys/block/{_base_disk(dev)}/removable").read().strip() == "1"
+    except Exception:
+        return False
+
+def _physical_disk_size_gb(base_dev):
+    """Tamano REAL del disco fisico (desde el kernel, en sectores de 512
+    bytes) - no la suma de sus particiones, que puede no cubrir el 100% del
+    disco (espacio sin particionar, particiones no montadas, etc.)."""
+    try:
+        sectors = int(open(f"/sys/block/{base_dev}/size").read().strip())
+        return round(sectors * 512 / 1024**3, 1)
+    except Exception:
+        return None
+
+def _disk_media_type(base_dev):
+    """"NVMe SSD"/"SSD"/"HDD"/None si no se pudo determinar. NVMe se
+    detecta por el nombre del device (nvme0n1...); para el resto,
+    /sys/block/<dev>/queue/rotational (0=no rotativo=SSD, 1=rotativo=HDD)
+    es el mismo dato que usa lsblk -d -o rota."""
+    if base_dev.startswith("nvme"):
+        return "NVMe SSD"
+    try:
+        rota = open(f"/sys/block/{base_dev}/queue/rotational").read().strip()
+        if rota == "0":
+            return "SSD"
+        if rota == "1":
+            return "HDD"
+    except Exception:
+        pass
+    return None
+
+def _disk_model(base_dev):
+    """Marca/modelo real del disco (ej. "Samsung SSD 980 500GB") desde
+    /sys/block/<dev>/device/model - mismo dato que muestra 'lsblk -d -o
+    model'. None si el device no expone esa ruta (discos virtuales, etc.)."""
+    try:
+        model = open(f"/sys/block/{base_dev}/device/model").read().strip()
+        return model or None
+    except Exception:
+        return None
+
+def _disk_interface(base_dev):
+    """Interfaz fisica real ("PCIe Gen3 x4", "SATA", "USB"...) o None si no
+    se pudo determinar - mismo criterio honesto que el lado Windows (ver
+    _get_disk_interface en smartmonitor_agent.py): nunca se inventa.
+    Para NVMe, current_link_speed/current_link_width vienen gratis en sysfs
+    (el mismo dato que expone `lspci -vv` para el controlador) - sin
+    necesitar leer nada del disco en si. Para SATA/USB alcanza con mirar de
+    que bus real cuelga el device (realpath de /sys/block/<dev>)."""
+    if base_dev.startswith("nvme"):
+        ctrl = re.sub(r"n\d+$", "", base_dev)  # nvme0n1 -> nvme0 (controlador, no el namespace)
+        try:
+            speed_raw = open(f"/sys/class/nvme/{ctrl}/device/current_link_speed").read().strip()
+            width_raw = open(f"/sys/class/nvme/{ctrl}/device/current_link_width").read().strip()
+            gts = float(speed_raw.split()[0])
+            gen = {2.5: 1, 5.0: 2, 8.0: 3, 16.0: 4, 32.0: 5}.get(gts)
+            width = int(width_raw)
+            if gen and width:
+                return f"PCIe Gen{gen} x{width}"
+        except Exception:
+            pass
+        return None
+    try:
+        real_path = os.path.realpath(f"/sys/block/{base_dev}")
+        if "usb" in real_path:
+            return "USB"
+        if "/ata" in real_path:
+            return "SATA"
+    except Exception:
+        pass
+    return None
 
 def read_cpu():
     with open("/proc/stat") as f:
         parts = f.readline().split()
     return int(parts[4]), sum(int(x) for x in parts[1:8])
 
+def _total_process_count():
+    """Cantidad total de procesos vivos - mismo criterio que EnumProcesses()
+    del agente Windows (todos, no solo los que entran en el top-100 de abajo)."""
+    try:
+        return sum(1 for e in os.listdir("/proc") if e.isdigit())
+    except Exception:
+        return 0
+
+def _proc_io_bytes(pid):
+    """Bytes leidos+escritos acumulados por este PID desde que arranco (no es
+    una tasa - eso se calcula comparando contra la lectura del ciclo
+    anterior, ver _prev_proc_io mas abajo). Requiere root (el agente ya lo
+    necesita para dmidecode), si no siempre devuelve None."""
+    try:
+        rb = wb = 0
+        with open(f"/proc/{pid}/io") as f:
+            for line in f:
+                if line.startswith("read_bytes:"):
+                    rb = int(line.split(":", 1)[1])
+                elif line.startswith("write_bytes:"):
+                    wb = int(line.split(":", 1)[1])
+        return rb + wb
+    except Exception:
+        return None
+
+def _read_diskstats():
+    """Suma de sectores leidos/escritos (en bytes) de /proc/diskstats, solo
+    discos fisicos completos (no particiones, no loop/ram/removibles) - mismo
+    criterio de fisico-vs-particion que ya usa physical_disks mas abajo."""
+    read_b = write_b = 0
+    try:
+        for line in open("/proc/diskstats"):
+            parts = line.split()
+            if len(parts) < 10:
+                continue
+            name = parts[2]
+            if re.match(r'^(loop|ram|sr\d)', name):
+                continue
+            if _base_disk("/dev/" + name) != name:
+                continue  # es una particion, no el disco completo
+            if _is_removable("/dev/" + name):
+                continue
+            read_b  += int(parts[5]) * 512   # sectores leidos, 512 bytes c/u
+            write_b += int(parts[9]) * 512   # sectores escritos
+    except Exception:
+        pass
+    return read_b, write_b
+
+# Estado entre ciclos para calcular tasas (KB/s, MB/s, Mbps) por diferencia -
+# ninguno de /proc/[pid]/io, /proc/diskstats o las stats de red da una tasa
+# directamente, solo contadores acumulados desde que arranco el proceso/equipo.
+_prev_proc_io  = {}
+_prev_disk_io  = None   # (read_bytes, write_bytes)
+_prev_net_io   = None   # (rx_bytes, tx_bytes)
+_prev_sample_ts = None
+
+def _parse_ram_block(b):
+    """Parsea un bloque 'Memory Device' de dmidecode a un dict con el mismo
+    esquema que ya manda el agente Windows (slot/size_gb/type/speed/
+    manufacturer/part_number/installed) - por linea, no por texto-dentro-de-
+    texto, para que 'Bank Locator:' no se confunda con 'Locator:'."""
+    fields = {}
+    for line in b.splitlines():
+        line = line.strip()
+        if ":" not in line: continue
+        k, _, v = line.partition(":")
+        fields[k.strip()] = v.strip()
+    size_str = fields.get("Size", "")
+    installed = size_str not in ("", "Unknown", "0", "No Module Installed", "Not Installed")
+    size_gb = 0
+    if installed:
+        m = re.match(r'(\d+)\s*(GB|MB)', size_str)
+        if m:
+            n = int(m.group(1))
+            size_gb = n if m.group(2) == "GB" else round(n / 1024)
+    mem_type = fields.get("Type", "")
+    if mem_type in ("", "Unknown"): mem_type = "DDR"
+    speed = fields.get("Speed", "")
+    if speed in ("Unknown", "Not Specified"): speed = ""
+    manufacturer = fields.get("Manufacturer", "")
+    if manufacturer in ("Unknown", "Not Specified"): manufacturer = ""
+    part_number = fields.get("Part Number", "")
+    if part_number in ("Unknown", "Not Specified"): part_number = ""
+    # "Form Factor" (DIMM de escritorio vs SODIMM de portatil/compacto) SI
+    # esta en el SMBIOS Type 17 estandar que lee dmidecode - a diferencia
+    # de la latencia CAS, que NO esta en ningun lado accesible sin leer el
+    # SPD crudo por I2C/SMBus (fuera de alcance: mismo tipo de operacion de
+    # bajo nivel que la lectura de disco fisico via IOCTL que se probo y
+    # descarto en Windows por bloqueo del antivirus - no vale la pena el
+    # riesgo/complejidad por un dato informativo).
+    form_factor = fields.get("Form Factor", "")
+    if form_factor in ("Unknown", ""): form_factor = None
+    return {"slot": fields.get("Locator", ""), "size_gb": size_gb, "type": mem_type,
+            "speed": speed, "manufacturer": manufacturer, "part_number": part_number,
+            "installed": installed, "form_factor": form_factor}
+
 def _get_ram_slots():
-    """Devuelve (slots_usados, slots_totales). Requiere root para dmidecode."""
+    """Devuelve (slots_usados, slots_totales, detalle_por_ranura,
+    capacidad_maxima_gb). Requiere root para dmidecode."""
     try:
         r = subprocess.run(
             ["dmidecode", "-t", "memory"],
             capture_output=True, text=True,
-            env={**os.environ, "LC_ALL": "C", "LANG": "C"}
+            env={**os.environ, "LC_ALL": "C", "LANG": "C"}, timeout=5
         )
         if r.returncode != 0 or "Permission denied" in r.stderr:
-            return 0, 0
-        blocks = r.stdout.split("Memory Device")
-        total = len(blocks) - 1  # primer bloque es cabecera
-        used  = sum(
-            1 for b in blocks[1:]
-            if "Size:" in b
-            and "No Module Installed" not in b
-            and "Not Installed" not in b
-            and b.split("Size:")[1].split("\n")[0].strip() not in ("Unknown", "0", "")
-        )
-        return used, total
+            return 0, 0, [], None
+        # "Maximum Capacity" vive en el bloque "Physical Memory Array" (uno
+        # solo, antes del primer "Memory Device") - el limite de RAM que
+        # soporta la placa, no la suma de lo instalado.
+        array_block = r.stdout.split("Memory Device")[0]
+        max_cap_gb = None
+        m = re.search(r'Maximum Capacity:\s*(\d+)\s*(GB|TB|MB)', array_block)
+        if m:
+            n, unit = int(m.group(1)), m.group(2)
+            max_cap_gb = n * 1024 if unit == "TB" else (n if unit == "GB" else round(n / 1024))
+        blocks = r.stdout.split("Memory Device")[1:]  # primer bloque es cabecera
+        detail = [_parse_ram_block(b) for b in blocks if "Size:" in b]
+        used = sum(1 for d in detail if d["installed"])
+        return used, len(detail), detail, max_cap_gb
     except Exception:
-        return 0, 0
+        return 0, 0, [], None
 
 def get_installed_software():
     """Retorna lista de {name, version} usando el gestor de paquetes disponible."""
@@ -351,6 +599,37 @@ def get_device_type():
     # probable es una PC/escritorio.
     return "Desktop"
 
+def _screen_size_in():
+    """Tamano de pantalla (diagonal, pulgadas) via EDID - solo si la pantalla
+    es parte fisica del equipo: laptop (integrada siempre) o PC 'All in One'
+    (chasis tipo 13). Un desktop normal con monitor aparte devuelve None a
+    proposito, ese monitor no es del equipo y podria cambiarse sin que
+    signifique nada."""
+    try:
+        t = open("/sys/class/dmi/id/chassis_type").read().strip()
+        ct = int(t) if t.isdigit() else None
+    except Exception:
+        ct = None
+    if ct not in ({8, 9, 10, 11, 14, 31, 32} | {13}):
+        return None
+    try:
+        import glob
+        for edid_path in glob.glob("/sys/class/drm/*/edid"):
+            try:
+                data = open(edid_path, "rb").read()
+                # Header estandar de EDID (VESA) - si no calza, no es un EDID valido
+                if len(data) < 23 or data[:8] != b"\x00\xff\xff\xff\xff\xff\xff\x00":
+                    continue
+                h_cm, v_cm = data[21], data[22]  # offset 0x15/0x16: tamano max en cm
+                if h_cm and v_cm:
+                    diag_in = ((h_cm ** 2 + v_cm ** 2) ** 0.5) / 2.54
+                    return round(diag_in, 1)
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return None
+
 def physical_ram_gb(usable_gb):
     """Redondea al tamaño comercial de RAM más cercano (4,8,12,16,20,24,32,64...)"""
     standards = [1,2,3,4,6,8,10,12,16,20,24,32,48,64,96,128,192,256]
@@ -359,10 +638,15 @@ def physical_ram_gb(usable_gb):
             return s
     return round(usable_gb)
 
-# ── Hardware (cachea en /tmp para no re-leer cada push) ──────────────────
-CACHE_FILE = "/tmp/sm_hw.json"
-hw = {}
-if not os.path.exists(CACHE_FILE):
+# ── Hardware ──────────────────────────────────────────────────────────────
+# Se recolecta fresco en cada send_once() (ver mas abajo), sin cachear en
+# disco: son puros archivos de /sys y un dmidecode, nada caro de releer cada
+# pocos minutos - y evita cualquier version de este agente quedando con datos
+# de hardware desactualizados por un cache viejo (paso de verdad: un cache en
+# /tmp de antes de que existiera ram_slots_detail se seguia usando para
+# siempre, porque nada invalidaba ese archivo al actualizar el agente).
+def collect_hw():
+    hw = {}
     try:
         hw["manufacturer"] = open("/sys/class/dmi/id/sys_vendor").read().strip()
         hw["model"]        = open("/sys/class/dmi/id/product_version").read().strip() \
@@ -380,45 +664,86 @@ if not os.path.exists(CACHE_FILE):
     except: pass
     hw["serial_number"] = serial
 
-    slots_total, slots_used = _get_ram_slots()
-    hw["ram_slots_total"]  = slots_total
-    hw["ram_slots_used"]   = slots_used
-    hw["ram_slots_detail"] = []
+    slots_used, slots_total, slots_detail, ram_max_capacity_gb = _get_ram_slots()
+    hw["ram_slots_total"]     = slots_total
+    hw["ram_slots_used"]      = slots_used
+    hw["ram_slots_detail"]    = slots_detail
+    hw["ram_max_capacity_gb"] = ram_max_capacity_gb
+    hw["device_type"] = get_device_type()
+    hw["screen_size_in"] = _screen_size_in()
+    return hw
 
-    with open(CACHE_FILE, "w") as f:
-        json.dump(hw, f)
-else:
-    with open(CACHE_FILE) as f:
-        hw = json.load(f)
+hw = collect_hw()
 
-# device_type se re-detecta en cada arranque: el caché puede venir de una
-# versión anterior del agente que no lo incluía, y además es barato.
-hw["device_type"] = get_device_type()
-
+last_latency_ms = None
 def get_interval():
+    # Se aprovecha esta llamada (que el agente ya hace cada ciclo) para medir
+    # la latencia al servidor, en vez de sumar una peticion de red aparte
+    # solo para eso. Queda "un ciclo atras" del ultimo send_once() - no hace
+    # falta mas precision para un dato informativo como este.
+    global last_latency_ms
     try:
+        t0 = time.time()
         r = urllib.request.urlopen(f"{SERVER}/api/config/interval", timeout=3)
+        last_latency_ms = round((time.time() - t0) * 1000, 1)
         cfg = json.loads(r.read())
         return max(3, int(cfg.get("interval", 5))), max(60, int(cfg.get("blocklist_interval", 60)))
     except:
         return 5, 60
 
 def send_once():
+    global hw, _prev_proc_io, _prev_disk_io, _prev_net_io, _prev_sample_ts
+    hw = collect_hw()
+
+    now_ts = time.time()
+    # None en el primer ciclo (no hay muestra anterior con la que restar) -
+    # todas las tasas de abajo quedan en 0 esa primera vez, nunca con un
+    # numero inventado.
+    elapsed = (now_ts - _prev_sample_ts) if _prev_sample_ts else None
+
     # ── Procesos top (agrupados por nombre) ──────────────────────────────
+    # user/pid/etimes(seg desde que arranco)/vsz se piden explicitos en vez
+    # de parsear la columna COMMAND completa de "ps aux" (fragil con rutas
+    # con espacios) - vsz=0 identifica hilos/procesos de kernel (sin memoria
+    # de usuario), igual que antes hacia el filtro de "[...]" de ps aux.
     seen_p = {}
-    for line in sh("ps aux --no-headers --sort=-%cpu | grep -vE '\\[|ps |grep' | head -200").splitlines():
-        parts = line.split(None, 10)
-        if len(parts) < 11: continue
-        name = re.sub(r'.*/','', parts[10].split()[0])
-        name = re.sub(r'[^a-zA-Z0-9_\-\.]', '', name)[:20]
+    cur_proc_io = {}
+    for line in sh("ps -eo user:32,pid,pcpu,pmem,etimes,vsz,comm --no-headers --sort=-%cpu | head -300").splitlines():
+        parts = line.split(None, 6)
+        if len(parts) < 7: continue
+        user, pid_s, cpu_s, mem_s, etimes_s, vsz_s, comm = parts
+        if vsz_s == "0" or comm == "ps":
+            continue
+        try:
+            pid = int(pid_s)
+            cpu_p, mem_p = float(cpu_s), float(mem_s)
+            etimes = int(etimes_s)
+        except ValueError:
+            continue
+        name = re.sub(r'[^a-zA-Z0-9_\-\.]', '', comm)[:20]
         if not name: continue
-        cpu_p, mem_p = float(parts[2]), float(parts[3])
+
+        io_bytes = _proc_io_bytes(pid)
+        disk_kb_s = 0.0
+        if io_bytes is not None:
+            cur_proc_io[pid] = io_bytes
+            if elapsed and pid in _prev_proc_io:
+                delta = io_bytes - _prev_proc_io[pid]
+                if delta > 0:
+                    disk_kb_s = round(delta / 1024 / elapsed, 1)
+
         if name in seen_p:
-            seen_p[name]["cpu"] = round(seen_p[name]["cpu"] + cpu_p, 1)
-            seen_p[name]["mem"] = round(seen_p[name]["mem"] + mem_p, 1)
+            g = seen_p[name]
+            g["cpu"] = round(g["cpu"] + cpu_p, 1)
+            g["mem"] = round(g["mem"] + mem_p, 1)
+            g["disk_kb_s"] = round(g["disk_kb_s"] + disk_kb_s, 1)
+            g["uptime_min"] = max(g["uptime_min"], round(etimes / 60, 1))
         else:
-            seen_p[name] = {"name": name, "cpu": cpu_p, "mem": mem_p}
+            seen_p[name] = {"name": name, "cpu": cpu_p, "mem": mem_p, "user": user,
+                             "disk_kb_s": disk_kb_s, "uptime_min": round(etimes / 60, 1)}
     procs = sorted(seen_p.values(), key=lambda x: -x["cpu"])[:100]
+    _prev_proc_io = cur_proc_io
+    process_count = _total_process_count()
 
     # ── RAM ───────────────────────────────────────────────────────────────
     meminfo = {}
@@ -440,29 +765,93 @@ def send_once():
     cpu_pct = round((1 - (idle2-idle1) / max(tot2-tot1, 1)) * 100, 1)
 
     # ── Disco ─────────────────────────────────────────────────────────────
-    dk = sh("df / | awk 'NR==2{gsub(\"%\",\"\",$5); printf \"%s %s %s\",$2,$3,$5}'").split()
-    disk_pct = float(dk[2]) if len(dk) >= 3 else 0.0
-
     disks, seen = [], set()
     for line in sh("df -x tmpfs -x devtmpfs -x overlay --output=source,target,size,used,pcent 2>/dev/null | tail -n +2").splitlines():
         p = line.split()
         if len(p) < 5: continue
-        dev, mnt = p[0], p[1]
-        tgb = round(int(p[2]) / 1024 / 1024, 1)
-        ugb = round(int(p[3]) / 1024 / 1024, 1)
-        pct = float(p[4].rstrip('%'))
-        if tgb < 0.1 or dev in seen: continue
+        # size/used/pcent son SIEMPRE los ultimos 3 campos (nunca tienen
+        # espacios); el mountpoint si puede tenerlos (ej. una USB con
+        # etiqueta "NUEVO VOL") y desalineaba un split() de izquierda a
+        # derecha, rompiendo send_once() con un ValueError en CADA envio -
+        # bug real encontrado en produccion (LAP-ISAAVEDRA con una USB asi
+        # montada dejo de reportar metricas por horas sin ningun otro sintoma).
+        dev = p[0]
+        mnt = " ".join(p[1:-3])
+        try:
+            tgb = round(int(p[-3]) / 1024 / 1024, 1)
+            ugb = round(int(p[-2]) / 1024 / 1024, 1)
+            pct = float(p[-1].rstrip('%'))
+        except ValueError:
+            continue
+        if not mnt or tgb < 0.1 or dev in seen: continue
         seen.add(dev)
         disks.append({"device": dev, "mountpoint": mnt, "total_gb": tgb, "used_gb": ugb, "percent": pct})
+
+    # Se descartan los removibles (USB, SD) - esos no cuentan como disco
+    # fisico del equipo. Cada particion que queda se etiqueta con un
+    # disk_index estable (0,1,2...) segun a que disco fisico pertenece.
+    disks = [d for d in disks if not _is_removable(d["device"])]
+    bases = sorted({_base_disk(d["device"]) for d in disks})
+    index_of = {base: i for i, base in enumerate(bases)}
+    for d in disks:
+        d["disk_index"] = index_of[_base_disk(d["device"])]
+
+    # Un disco fisico -> una entrada en physical_disks, con el tamano REAL
+    # de hardware (/sys/block/*/size, no sumando particiones - eso puede no
+    # cubrir el 100% del disco) y el uso combinado de sus particiones.
+    used_by_base = {}
+    for d in disks:
+        base = _base_disk(d["device"])
+        used_by_base.setdefault(base, {"used_gb": 0.0, "count": 0})
+        used_by_base[base]["used_gb"] += d["used_gb"]
+        used_by_base[base]["count"]   += 1
+    physical_disks = []
+    for base, i in index_of.items():
+        info = used_by_base[base]
+        used = round(info["used_gb"], 1)
+        real_total = _physical_disk_size_gb(base)
+        total = real_total if real_total is not None else used
+        pct = round(used / total * 100, 1) if total > 0 else 0.0
+        physical_disks.append({
+            "disk_index": i, "total_gb": total, "used_gb": used,
+            "percent": pct, "partitions": info["count"],
+            "media_type": _disk_media_type(base),
+            "model": _disk_model(base),
+            "interface": _disk_interface(base),
+        })
+
+    # disk_percent (resumen) = el disco fisico que tiene la raiz "/" entre
+    # sus particiones.
+    root_partition = next((d for d in disks if d["mountpoint"] == "/"), None)
+    disk_pct = physical_disks[root_partition["disk_index"]]["percent"] if root_partition \
+        else (physical_disks[0]["percent"] if physical_disks else 0.0)
 
     # ── Red ───────────────────────────────────────────────────────────────
     net_dev = sh("ip route | grep default | awk '{print $5}' | head -1")
     rx_mb = tx_mb = 0.0
+    net_down_mbps = net_up_mbps = 0.0
     if net_dev:
         try:
-            rx_mb = round(int(open(f"/sys/class/net/{net_dev}/statistics/rx_bytes").read()) / 1024 / 1024, 1)
-            tx_mb = round(int(open(f"/sys/class/net/{net_dev}/statistics/tx_bytes").read()) / 1024 / 1024, 1)
+            rx_now = int(open(f"/sys/class/net/{net_dev}/statistics/rx_bytes").read())
+            tx_now = int(open(f"/sys/class/net/{net_dev}/statistics/tx_bytes").read())
+            rx_mb = round(rx_now / 1024 / 1024, 1)
+            tx_mb = round(tx_now / 1024 / 1024, 1)
+            if elapsed and _prev_net_io:
+                prx, ptx = _prev_net_io
+                net_down_mbps = round(max(rx_now - prx, 0) * 8 / 1_000_000 / elapsed, 2)
+                net_up_mbps   = round(max(tx_now - ptx, 0) * 8 / 1_000_000 / elapsed, 2)
+            _prev_net_io = (rx_now, tx_now)
         except: pass
+
+    # ── Throughput de disco (todo el equipo, no por proceso) ────────────────
+    disk_read_mb_s = disk_write_mb_s = 0.0
+    rb, wb = _read_diskstats()
+    if elapsed and _prev_disk_io:
+        prb, pwb = _prev_disk_io
+        disk_read_mb_s  = round(max(rb - prb, 0) / 1024 / 1024 / elapsed, 2)
+        disk_write_mb_s = round(max(wb - pwb, 0) / 1024 / 1024 / elapsed, 2)
+    _prev_disk_io = (rb, wb)
+    _prev_sample_ts = now_ts
 
     # ── Temperatura ───────────────────────────────────────────────────────
     cpu_temp = None
@@ -492,9 +881,10 @@ def send_once():
         "serial_number":      hw.get("serial_number", ""),
         "cpu_model":          hw.get("cpu_model", ""),
         "cpu_cores":          hw.get("cpu_cores", 0),
-        "ram_slots_total":    hw.get("ram_slots_total") or None,
-        "ram_slots_used":     hw.get("ram_slots_used") or None,
-        "ram_slots_detail":   hw.get("ram_slots_detail") or [],
+        "ram_slots_total":     hw.get("ram_slots_total") or None,
+        "ram_slots_used":      hw.get("ram_slots_used") or None,
+        "ram_slots_detail":    hw.get("ram_slots_detail") or [],
+        "ram_max_capacity_gb": hw.get("ram_max_capacity_gb"),
         "ram_total_gb":       ram_total_gb,
         "cpu_percent":        cpu_pct,
         "ram_percent":        ram_pct,
@@ -502,12 +892,19 @@ def send_once():
         "disk_percent":       disk_pct,
         "net_rx_mb":          rx_mb,
         "net_tx_mb":          tx_mb,
+        "process_count":      process_count,
+        "disk_read_mb_s":     disk_read_mb_s,
+        "disk_write_mb_s":    disk_write_mb_s,
+        "net_down_mbps":      net_down_mbps,
+        "net_up_mbps":        net_up_mbps,
         "cpu_temp":           cpu_temp,
-        "latency_ms":         None,
+        "latency_ms":         last_latency_ms,
         "disks":              disks,
+        "physical_disks":     physical_disks,
         "top_processes":      procs,
         "installed_software": installed_software,
         "device_type":        hw.get("device_type", ""),
+        "screen_size_in":     hw.get("screen_size_in"),
         "tailnet_ip":         tailnet_ip,
     }
     data = json.dumps(payload).encode()
@@ -530,24 +927,60 @@ BLOCKLIST_POLL_SEC = 60
 # cuánto tráfico llega a cada server.
 print(f"Servidor configurado: {SERVER} | Hostname: {HOSTNAME}")
 
-# Fase 2: cerrar la via de DoH para que el DNS central se use de verdad
-disable_browser_doh_linux()
-block_doh_endpoints_linux()
+# Fase 2 (cerrar la via de DoH) ya no se aplica aca de forma incondicional -
+# se decide en el loop principal junto con set_central_dns/restore_dns_central,
+# segun horario y red permitida (ver comentario en unblock_doh_endpoints_linux).
 
 # Intento inicial de conectar el tunel WireGuard (no bloqueante: si falla,
 # el agente sigue funcionando por IP publica igual que siempre)
 setup_wireguard_tunnel()
 
+# Reaccion inmediata a cambios de red (conectar/desconectar WiFi, cambiar de
+# SSID, enchufar a otra red por cable, etc.), en vez de esperar hasta
+# BLOCKLIST_POLL_SEC para notarlo. Un hilo en segundo plano compara SSID+
+# gateway cada 2s (barato, sin tocar red) y prende una bandera apenas cambian;
+# el loop principal corta su espera apenas la ve prendida (ver el sleep
+# fraccionado de abajo).
+_network_changed = threading.Event()
+
+def _network_fingerprint():
+    gw = sh("ip route show default 2>/dev/null | head -1").strip()
+    return f"{get_wifi_ssid() or ''}|{gw}"
+
+def _watch_network_changes():
+    last = _network_fingerprint()
+    while True:
+        time.sleep(2)
+        try:
+            cur = _network_fingerprint()
+            if cur != last:
+                last = cur
+                _network_changed.set()
+        except Exception:
+            pass
+
+threading.Thread(target=_watch_network_changes, daemon=True).start()
+
 interval, BLOCKLIST_POLL_SEC = get_interval()
 last_metrics = 0.0
 last_wireguard_retry = time.time()
 while True:
+    # Metricas y bloqueo/DNS van en try/except SEPARADOS: antes, si send_once()
+    # fallaba (ej. un corte de red pasajero), la excepcion abortaba tambien la
+    # revision de bloqueo/DNS de ESE mismo ciclo (estaban en un solo try). Con
+    # BLOCKLIST_POLL_SEC pudiendo ser de varios minutos, eso podia dejar el
+    # bloqueo sin refrescar por mucho tiempo solo porque el reporte de
+    # metricas fallo, dos problemas sin relacion entre si.
     try:
         now_t = time.time()
         if now_t - last_metrics >= interval:
             send_once()
             interval, BLOCKLIST_POLL_SEC = get_interval()
             last_metrics = time.time()
+    except Exception as e:
+        print(f"Error enviando metricas: {e}", file=sys.stderr)
+
+    try:
         # Se revalida en CADA ciclo si el tunel sigue realmente vivo (no solo
         # una vez al conectar): si Tailscale se cae despues de haber estado
         # conectado, tailnet_ip quedaba en un valor viejo para siempre, y el
@@ -556,10 +989,16 @@ while True:
         # bloqueo se saltaba por completo.
         tailnet_ip = get_tailscale_ip()
 
-        # Reintenta conectar el tunel WireGuard cada ~60s si todavia no lo
-        # logro (ej. tailscaled tardo en arrancar, se cayo, o el server no
-        # tenia Headscale configurado en ese momento).
-        if not tailnet_ip and time.time() - last_wireguard_retry >= 60:
+        # Reintenta cada ~60s si el tunel no esta arriba, O si esta arriba
+        # pero todavia no sabemos la IP del server dentro del tunel
+        # (tailnet_server_ip): antes esto ultimo solo se pedia UNA vez, la
+        # primera que tailnet_ip se ponia en verdadero - si ese pedido
+        # fallaba por un hiccup de red al arrancar, el agente quedaba
+        # atrapado usando la IP publica compartida de la oficina para
+        # siempre (varios equipos detras del mismo NAT "contaminan" el
+        # bloqueo entre si - ver el comentario de by_ip en dns_blocker.py),
+        # sin ninguna forma de corregirse solo.
+        if (not tailnet_ip or not tailnet_server_ip) and time.time() - last_wireguard_retry >= 60:
             setup_wireguard_tunnel()
             last_wireguard_retry = time.time()
         should_block, all_domains = get_blocklist()
@@ -567,12 +1006,28 @@ while True:
             all_domains = all_domains or []
             if should_block and all_domains:
                 set_central_dns()
+                disable_browser_doh_linux()
+                block_doh_endpoints_linux()
                 print("BLOCKLIST modo=DNS-central (el server filtra)")
             else:
                 restore_dns_central()
+                unblock_doh_endpoints_linux()
+                enable_browser_doh_linux()
                 print("BLOCKLIST modo=off")
         else:
             print("BLOCKLIST sin respuesta del servidor (None)")
     except Exception as e:
-        import sys; print(f"Error: {e}", file=sys.stderr)
-    time.sleep(BLOCKLIST_POLL_SEC)
+        print(f"Error en bloqueo/DNS: {e}", file=sys.stderr)
+
+    # Espera fraccionada (en vez de un solo sleep largo) para poder cortarla
+    # apenas _network_changed se prenda - asi un cambio de red dispara la
+    # revision del bloqueo casi al instante en vez de esperar el ciclo entero.
+    waited = 0.0
+    while waited < BLOCKLIST_POLL_SEC:
+        if _network_changed.is_set():
+            _network_changed.clear()
+            print("Cambio de red detectado - revisando bloqueo de inmediato")
+            time.sleep(3)  # debounce: dar tiempo a que la SSID/IP se asienten
+            break
+        time.sleep(2)
+        waited += 2

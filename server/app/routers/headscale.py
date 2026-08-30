@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException
-import os, ssl, urllib.request, json
+import os, ssl, urllib.request, urllib.parse, json
 
 # Llamada interna (mismo host, 127.0.0.1) al puerto TLS de Headscale: el
 # certificado real es para el dominio publico (ver HEADSCALE_PUBLIC_URL), no
@@ -72,3 +72,41 @@ def create_preauthkey(data: dict):
         "authkey": resp["preAuthKey"]["key"],
         "server_tailnet_ip": HEADSCALE_SERVER_TAILNET_IP,
     }
+
+
+def rename_headscale_node(tailnet_ip: str, new_name: str) -> bool:
+    """Renombra el 'nombre visible' (givenName) del nodo en Headscale para
+    que coincida con el display_name que se le puso en SmartMonitor - NO
+    toca el hostname real de Tailscale (name), que es el que usa MagicDNS
+    puertas adentro del tailnet. Headscale ya distingue ambos conceptos,
+    igual que Agent.hostname vs Agent.display_name aca.
+
+    Se identifica el nodo por su tailnet_ip (unica) en vez de por nombre,
+    porque el hostname original puede no coincidir mas con el actual.
+    Best-effort: si Headscale no esta configurado o falla, no rompe el
+    guardado en SmartMonitor - solo queda desincronizado hasta el proximo
+    intento de renombrar."""
+    if not (HEADSCALE_API_KEY and tailnet_ip and new_name):
+        return False
+    ctx = _INTERNAL_SSL_CTX if HEADSCALE_URL.startswith("https://") else None
+    try:
+        req = urllib.request.Request(
+            f"{HEADSCALE_URL}/api/v1/node",
+            headers={"Authorization": f"Bearer {HEADSCALE_API_KEY}"},
+        )
+        with urllib.request.urlopen(req, timeout=10, context=ctx) as r:
+            nodes = json.loads(r.read()).get("nodes", [])
+        node = next((n for n in nodes if tailnet_ip in (n.get("ipAddresses") or [])), None)
+        if not node:
+            return False
+        safe_name = urllib.parse.quote(str(new_name), safe="")
+        req2 = urllib.request.Request(
+            f"{HEADSCALE_URL}/api/v1/node/{node['id']}/rename/{safe_name}",
+            method="POST",
+            headers={"Authorization": f"Bearer {HEADSCALE_API_KEY}"},
+        )
+        with urllib.request.urlopen(req2, timeout=10, context=ctx):
+            pass
+        return True
+    except Exception:
+        return False

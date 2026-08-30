@@ -52,7 +52,19 @@ def upsert_attempts(db: Session, agent_id: str, entries, now=None):
 def _find_exception(domain: str, agent: Optional[Agent], exceptions: list):
     """De las excepciones vigentes, busca la que probablemente dejó pasar este
     dominio (coincidencia exacta o de subdominio), priorizando Equipo > Área >
-    Global — igual que la prioridad de resolve_domains_for_agent."""
+    Global — igual que la prioridad de resolve_domains_for_agent.
+
+    Bug real corregido (agosto 2026): el fallback final devolvia
+    "candidates[0]" - cualquier excepcion que coincidiera en dominio, aunque
+    estuviera scopeada a OTRO equipo o a OTRA area sin relacion con este
+    agente. Un equipo sin area asignada (agent.sede_id None) terminaba
+    mostrando "Excepción: <motivo de la excepcion de otra area>" para un
+    dominio que en realidad paso por cualquier otro motivo (ej. el dominio
+    ni siquiera esta en la lista de bloqueo) - caso real: LAP-ATAFUR-OLD
+    (sin area) mostraba una excepcion de facebook.com/snapchat.com que en
+    verdad pertenece a otra area. Si no coincide en equipo, en la propia
+    area del agente, o no es realmente global (agent_id y sede_id ambos
+    None), no hay que atribuirle ninguna excepcion."""
     def matches(s):
         d = s.domain.lower()
         return domain == d or domain.endswith('.' + d)
@@ -70,7 +82,7 @@ def _find_exception(domain: str, agent: Optional[Agent], exceptions: list):
     for s in candidates:
         if s.agent_id is None and s.sede_id is None:
             return s
-    return candidates[0]
+    return None
 
 def _fmt(r: BlockAttempt, agents_by_id: dict, sedes_by_id: dict, exceptions: list):
     a = agents_by_id.get(r.agent_id)

@@ -83,6 +83,85 @@ def test_telegram(user=Depends(require_permission("settings", "edit"))):
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
+def _whatsapp_recipients(cfg: dict) -> list:
+    """CallMeBot exige una API key por numero (cada quien se activa por su
+    lado) - por eso es una LISTA de {phone, apikey}, no un solo par. Migra
+    en el momento el formato viejo de un solo numero (whatsapp_phone/
+    whatsapp_apikey) si todavia esta asi guardado."""
+    recipients = cfg.get("whatsapp_recipients")
+    if recipients is not None:
+        return recipients
+    old_phone  = cfg.get("whatsapp_phone", "")
+    old_apikey = cfg.get("whatsapp_apikey", "")
+    return [{"phone": old_phone, "apikey": old_apikey}] if (old_phone and old_apikey) else []
+
+DEFAULT_WHATSAPP_ACTIVATION_NUMBER = "+34 644 59 71 36"
+
+@router.get("/whatsapp")
+def get_whatsapp(user=Depends(require_permission("settings", "view"))):
+    cfg = _read()
+    return {
+        "enabled": cfg.get("whatsapp_enabled", False),
+        "recipients": _whatsapp_recipients(cfg),
+        # numero de activacion de CallMeBot (solo informativo, para el paso
+        # manual de "agrega este contacto y mandale el mensaje") - editable
+        # desde el panel porque CallMeBot a veces lo cambia y no hay forma
+        # de detectarlo automaticamente (no tienen API para eso).
+        "activation_number": cfg.get("whatsapp_activation_number") or DEFAULT_WHATSAPP_ACTIVATION_NUMBER,
+    }
+
+@router.put("/whatsapp")
+def set_whatsapp(data: dict, user=Depends(require_permission("settings", "edit"))):
+    """Actualiza SOLO los campos que vengan en el body - "enabled",
+    "recipients" y "activation_number" son 3 acciones independientes desde
+    el panel (activar, guardar numeros, actualizar el numero de activacion
+    de CallMeBot), asi que guardar una no debe pisar ni resetear las otras
+    dos si no vinieron en esta llamada puntual."""
+    cfg = _read()
+    if "enabled" in data:
+        cfg["whatsapp_enabled"] = bool(data.get("enabled", False))
+    if "recipients" in data:
+        recipients = []
+        for r in (data.get("recipients") or []):
+            phone  = str((r or {}).get("phone", "")).strip()
+            apikey = str((r or {}).get("apikey", "")).strip()
+            if phone and apikey:
+                recipients.append({"phone": phone, "apikey": apikey})
+        cfg["whatsapp_recipients"] = recipients
+    if "activation_number" in data:
+        activation_number = str(data.get("activation_number", "")).strip()
+        cfg["whatsapp_activation_number"] = activation_number or DEFAULT_WHATSAPP_ACTIVATION_NUMBER
+    # limpia el formato viejo de un solo numero para no dejar datos
+    # duplicados/desactualizados dando vueltas en el archivo de config
+    cfg.pop("whatsapp_phone", None)
+    cfg.pop("whatsapp_apikey", None)
+    _write(cfg)
+    return {"ok": True}
+
+@router.post("/whatsapp/test")
+def test_whatsapp(user=Depends(require_permission("settings", "edit"))):
+    import urllib.request, urllib.parse
+    cfg = _read()
+    recipients = _whatsapp_recipients(cfg)
+    if not recipients:
+        return {"ok": False, "error": "No hay ningún número configurado"}
+    sent, errors = 0, []
+    for r in recipients:
+        try:
+            params = urllib.parse.urlencode({
+                "phone": r["phone"], "apikey": r["apikey"],
+                "text": "✅ SmartMonitor conectado correctamente (CallMeBot)",
+            })
+            urllib.request.urlopen(f"https://api.callmebot.com/whatsapp.php?{params}", timeout=8)
+            sent += 1
+        except Exception as e:
+            errors.append(f"{r['phone']}: {e}")
+    if sent == 0:
+        return {"ok": False, "error": "; ".join(errors)}
+    if errors:
+        return {"ok": True, "error": f"Enviado a {sent}/{len(recipients)}. Fallos: " + "; ".join(errors)}
+    return {"ok": True}
+
 @router.get("/email")
 def get_email(user=Depends(require_permission("settings", "view"))):
     from core.notify import DEFAULT_HTML_TEMPLATE, DEFAULT_SUBJECT_TEMPLATE

@@ -5,7 +5,7 @@ from typing import Optional
 import re
 from core.db import get_db
 from core.permissions import require_permission
-from models.models import BlockedSite, Agent, BlockCategory, Sede
+from models.models import BlockedSite, Agent, BlockCategory, Sede, Event
 from routers.block_schedules import _local_now, _parse_expires
 
 router = APIRouter(prefix="/api/blocked-sites", tags=["blocked-sites"])
@@ -216,6 +216,57 @@ def _fmt(b: BlockedSite, db: Session) -> dict:
         "created_at": b.created_at.isoformat() if b.created_at else None,
     }
 
+def _exception_scope_desc(site: BlockedSite, db: Session) -> str | None:
+    """Descripcion legible de a que nivel aplica una excepcion, para el
+    registro en Eventos (reportes). El equipo no se incluye aqui porque ya
+    lo muestra la propia columna de equipo/hostname del evento; solo aporta
+    algo nuevo cuando el alcance es area o global."""
+    if site.agent_id:
+        return None
+    if site.sede_id:
+        sede = db.query(Sede).filter(Sede.id == site.sede_id).first()
+        name = sede.name if sede else "área eliminada"
+        return f"área: {name}"
+    return "global (todos los equipos)"
+
+def _log_exception_event(db: Session, site: BlockedSite, when=None):
+    """Registra en Eventos la creacion de una excepcion, para que quede en
+    reportes: dominio, a que nivel aplica (area/global, si no es un equipo
+    puntual) y fecha de expiracion si tiene. El motivo (site.reason) va en su
+    propia columna Event.reason, no embebido en el detalle. La fecha de
+    creacion es el propio timestamp del evento - "when" solo se usa para el
+    respaldo historico (backfill de excepciones que ya existian antes de
+    este registro)."""
+    detail = f"Excepción: {site.domain}"
+    scope = _exception_scope_desc(site, db)
+    if scope:
+        detail += f" — {scope}"
+    if site.expires_at:
+        detail += f" — Expira: {site.expires_at.strftime('%Y-%m-%d %H:%M')}"
+    ev = Event(
+        agent_id=site.agent_id, sede_id=site.sede_id, type="exception_created",
+        detail=detail, reason=(site.reason or "Excepción de bloqueo agregada manualmente"),
+    )
+    if when:
+        ev.timestamp = when
+    db.add(ev)
+
+def _log_expired_exception_event(db: Session, site: BlockedSite):
+    """Igual que _log_exception_event, pero para cuando una excepcion
+    expira y se borra sola (ver _purge_expired_sites) - sin esto no queda
+    NINGUN rastro de que existio: la fila se borra de blocked_sites y no
+    hay otro lado donde quedara guardada. Es la unica forma de poder
+    responder despues "que excepciones expiraron" (ver tarjeta
+    "Expirados" en Sitios bloqueados)."""
+    detail = f"Excepción expirada: {site.domain}"
+    scope = _exception_scope_desc(site, db)
+    if scope:
+        detail += f" — {scope}"
+    db.add(Event(
+        agent_id=site.agent_id, sede_id=site.sede_id, type="exception_expired",
+        detail=detail, reason=site.reason,
+    ))
+
 def _purge_expired_sites(db: Session):
     now = _local_now(None)
     candidates = db.query(BlockedSite).filter(
@@ -224,6 +275,7 @@ def _purge_expired_sites(db: Session):
     changed = False
     for s in candidates:
         if s.expires_at <= now:
+            _log_expired_exception_event(db, s)
             db.delete(s)
             changed = True
     if changed:
@@ -262,6 +314,9 @@ def create_blocked_site(data: BlockedSiteCreate, user=Depends(require_permission
     db.add(site)
     db.commit()
     db.refresh(site)
+    if site.is_exception:
+        _log_exception_event(db, site)
+        db.commit()
     return _fmt(site, db)
 
 @router.get("/categories")
@@ -401,15 +456,24 @@ def apply_category(key: str, data: CategoryApply, user=Depends(require_permissio
         ).all()
     }
     created = 0
+    new_sites = []
     for domain in cat["domains"]:
         if domain in existing:
             continue
-        db.add(BlockedSite(
+        site = BlockedSite(
             domain=domain, agent_id=data.agent_id or None, sede_id=data.sede_id or None,
             category=key, reason=data.reason, is_exception=data.is_exception,
             expires_at=_parse_expires(data.expires_at) if data.is_exception else None,
-        ))
+        )
+        db.add(site)
+        new_sites.append(site)
         created += 1
+    if data.is_exception:
+        # Un evento por dominio (no uno solo resumido) - misma trazabilidad
+        # que crear una excepcion individual, aunque aca se apliquen varias
+        # de una sola vez (categoria completa).
+        for site in new_sites:
+            _log_exception_event(db, site)
     db.commit()
     return {"ok": True, "created": created, "skipped": len(cat["domains"]) - created}
 

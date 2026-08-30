@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
+from fastapi import Response
 from pathlib import Path
 import os, threading, time as _time
 
@@ -8,7 +9,7 @@ from core.db import engine, get_db, hash_password, Session as DBSession
 from models.models import Base, User
 from routers import auth, agents, sedes, config, alerts, discovery, reports
 from routers import blocked_sites, block_schedules, block_reports, network_gate, block_attempts
-from routers import roles, headscale
+from routers import roles, headscale, assets, agent_uninstall_codes
 from dns_blocker import start_dns_blocker
 from sqlalchemy.orm import Session
 
@@ -94,6 +95,138 @@ def startup():
             changed_by VARCHAR,
             created_at TIMESTAMP DEFAULT NOW()
         )""",
+        "ALTER TABLE agents ADD COLUMN IF NOT EXISTS screen_size_in FLOAT",
+        "ALTER TABLE disks ADD COLUMN IF NOT EXISTS disk_index INTEGER",
+        """CREATE TABLE IF NOT EXISTS physical_disks (
+            id SERIAL PRIMARY KEY,
+            agent_id VARCHAR NOT NULL REFERENCES agents(id),
+            disk_index INTEGER,
+            total_gb FLOAT,
+            used_gb FLOAT,
+            percent FLOAT,
+            partitions INTEGER,
+            updated_at TIMESTAMP DEFAULT NOW()
+        )""",
+        # events.agent_id ya no es obligatorio (excepciones a nivel de area o
+        # globales no tienen un agente puntual) + nueva columna sede_id.
+        "ALTER TABLE events ALTER COLUMN agent_id DROP NOT NULL",
+        "ALTER TABLE events ADD COLUMN IF NOT EXISTS sede_id VARCHAR",
+        "CREATE INDEX IF NOT EXISTS ix_events_sede_id ON events (sede_id)",
+        "ALTER TABLE events ADD COLUMN IF NOT EXISTS reason VARCHAR",
+        """CREATE TABLE IF NOT EXISTS login_attempts (
+            id SERIAL PRIMARY KEY,
+            email VARCHAR,
+            user_id VARCHAR REFERENCES users(id) ON DELETE SET NULL,
+            success BOOLEAN DEFAULT FALSE,
+            reason VARCHAR,
+            ip_address VARCHAR,
+            timestamp TIMESTAMP DEFAULT NOW()
+        )""",
+        "CREATE INDEX IF NOT EXISTS ix_login_attempts_email ON login_attempts (email)",
+        "CREATE INDEX IF NOT EXISTS ix_login_attempts_user_id ON login_attempts (user_id)",
+        "CREATE INDEX IF NOT EXISTS ix_login_attempts_success ON login_attempts (success)",
+        "CREATE INDEX IF NOT EXISTS ix_login_attempts_timestamp ON login_attempts (timestamp)",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_default_admin BOOLEAN DEFAULT FALSE",
+        # Inventario general (activos no monitoreados). create_all ya deberia
+        # crear estas 3 tablas nuevas, pero se dejan explicitas como red de
+        # seguridad (mismo criterio que agent_change_log) - deben ir ANTES de
+        # la columna events.asset_id, que las referencia.
+        """CREATE TABLE IF NOT EXISTS asset_types (
+            id VARCHAR PRIMARY KEY,
+            name VARCHAR UNIQUE NOT NULL,
+            icon VARCHAR,
+            kind VARCHAR,
+            extra_fields JSON,
+            created_at TIMESTAMP DEFAULT NOW()
+        )""",
+        "ALTER TABLE asset_types ADD COLUMN IF NOT EXISTS linkable_type_id VARCHAR REFERENCES asset_types(id)",
+        """CREATE TABLE IF NOT EXISTS assets (
+            id VARCHAR PRIMARY KEY,
+            type_id VARCHAR NOT NULL REFERENCES asset_types(id),
+            name VARCHAR NOT NULL,
+            code VARCHAR,
+            status VARCHAR,
+            sede_id VARCHAR REFERENCES sedes(id),
+            assigned_user VARCHAR REFERENCES users(id) ON DELETE SET NULL,
+            assigned_at DATE,
+            purchase_date DATE,
+            invoice_number VARCHAR,
+            notes TEXT,
+            extra_data JSON,
+            linked_asset_id VARCHAR REFERENCES assets(id),
+            stock_total INTEGER,
+            stock_assigned INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT NOW(),
+            updated_at TIMESTAMP DEFAULT NOW()
+        )""",
+        "CREATE INDEX IF NOT EXISTS ix_assets_type_id ON assets (type_id)",
+        "CREATE INDEX IF NOT EXISTS ix_assets_sede_id ON assets (sede_id)",
+        "CREATE INDEX IF NOT EXISTS ix_assets_assigned_user ON assets (assigned_user)",
+        "CREATE INDEX IF NOT EXISTS ix_assets_code ON assets (code)",
+        """CREATE TABLE IF NOT EXISTS asset_assignment_log (
+            id SERIAL PRIMARY KEY,
+            asset_id VARCHAR NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+            assigned_to VARCHAR REFERENCES users(id) ON DELETE SET NULL,
+            assigned_to_name VARCHAR,
+            quantity INTEGER DEFAULT 1,
+            returned_quantity INTEGER DEFAULT 0,
+            assigned_at DATE,
+            delivery_notes TEXT,
+            returned_at DATE,
+            return_notes TEXT,
+            changed_by VARCHAR,
+            created_at TIMESTAMP DEFAULT NOW()
+        )""",
+        "CREATE INDEX IF NOT EXISTS ix_asset_assignment_log_asset_id ON asset_assignment_log (asset_id)",
+        "ALTER TABLE events ADD COLUMN IF NOT EXISTS asset_id VARCHAR",
+        "ALTER TABLE agents ADD COLUMN IF NOT EXISTS paused_until TIMESTAMP",
+        "CREATE INDEX IF NOT EXISTS ix_events_asset_id ON events (asset_id)",
+        """CREATE TABLE IF NOT EXISTS agent_uninstall_codes (
+            id VARCHAR PRIMARY KEY,
+            agent_id VARCHAR NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+            code VARCHAR NOT NULL,
+            expires_at TIMESTAMP NOT NULL,
+            used_at TIMESTAMP,
+            attempts INTEGER DEFAULT 0,
+            invalidated BOOLEAN DEFAULT FALSE,
+            created_by VARCHAR,
+            created_at TIMESTAMP DEFAULT NOW()
+        )""",
+        "CREATE INDEX IF NOT EXISTS ix_agent_uninstall_codes_agent_id ON agent_uninstall_codes (agent_id)",
+        "CREATE INDEX IF NOT EXISTS ix_agent_uninstall_codes_code ON agent_uninstall_codes (code)",
+        "ALTER TABLE agents ADD COLUMN IF NOT EXISTS pause_until_reboot BOOLEAN DEFAULT FALSE",
+        """CREATE TABLE IF NOT EXISTS agent_pause_codes (
+            id VARCHAR PRIMARY KEY,
+            agent_id VARCHAR NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+            code VARCHAR NOT NULL,
+            expires_at TIMESTAMP NOT NULL,
+            used_at TIMESTAMP,
+            attempts INTEGER DEFAULT 0,
+            invalidated BOOLEAN DEFAULT FALSE,
+            created_by VARCHAR,
+            created_at TIMESTAMP DEFAULT NOW()
+        )""",
+        "CREATE INDEX IF NOT EXISTS ix_agent_pause_codes_agent_id ON agent_pause_codes (agent_id)",
+        "CREATE INDEX IF NOT EXISTS ix_agent_pause_codes_code ON agent_pause_codes (code)",
+        """CREATE TABLE IF NOT EXISTS password_reset_tokens (
+            id VARCHAR PRIMARY KEY,
+            user_id VARCHAR NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            token VARCHAR NOT NULL,
+            expires_at TIMESTAMP NOT NULL,
+            used_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT NOW()
+        )""",
+        "CREATE INDEX IF NOT EXISTS ix_password_reset_tokens_user_id ON password_reset_tokens (user_id)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS ix_password_reset_tokens_token ON password_reset_tokens (token)",
+        "ALTER TABLE metrics ADD COLUMN IF NOT EXISTS process_count INTEGER",
+        "ALTER TABLE metrics ADD COLUMN IF NOT EXISTS disk_read_mb_s FLOAT",
+        "ALTER TABLE metrics ADD COLUMN IF NOT EXISTS disk_write_mb_s FLOAT",
+        "ALTER TABLE metrics ADD COLUMN IF NOT EXISTS net_down_mbps FLOAT",
+        "ALTER TABLE metrics ADD COLUMN IF NOT EXISTS net_up_mbps FLOAT",
+        "ALTER TABLE physical_disks ADD COLUMN IF NOT EXISTS media_type VARCHAR",
+        "ALTER TABLE agents ADD COLUMN IF NOT EXISTS ram_max_capacity_gb INTEGER",
+        "ALTER TABLE physical_disks ADD COLUMN IF NOT EXISTS model VARCHAR",
+        "ALTER TABLE physical_disks ADD COLUMN IF NOT EXISTS interface VARCHAR",
     ]
     conn = engine.connect()
     try:
@@ -109,18 +242,37 @@ def startup():
     try:
         role_ids = roles.seed_default_roles(db)
 
+        # Red de seguridad para nunca quedar bloqueados fuera del panel - pero
+        # SOLO si de verdad no queda NINGUN admin activo. Antes esto revivia
+        # el "Administrador" de fabrica en cada reinicio del contenedor con
+        # solo que faltara ESE email puntual, aunque el usuario ya tuviera
+        # sus propios admins configurados - beneficio, cada deploy le hacia
+        # "reaparecer" un usuario que habia eliminado a proposito.
         admin_email = os.getenv("ADMIN_EMAIL", "admin@smartmonitor.local")
         admin_pass  = os.getenv("ADMIN_PASSWORD", "Admin2024!")
-        if not db.query(User).filter(User.email == admin_email).first():
+        has_active_admin = db.query(User).filter(
+            User.role_id == role_ids["admin"],
+            User.active == True,
+            User.has_access.isnot(False),
+        ).first()
+        existing_default_admin = db.query(User).filter(User.email == admin_email).first()
+        if not has_active_admin and not existing_default_admin:
             db.add(User(
                 name="Administrador",
                 email=admin_email,
                 password=hash_password(admin_pass),
                 role="admin",
                 role_id=role_ids["admin"],
+                is_default_admin=True,
             ))
             db.commit()
             print(f"[SmartMonitor] Admin creado: {admin_email}")
+        elif existing_default_admin and not existing_default_admin.is_default_admin:
+            # Backfill: la fila ya existia de antes de que existiera esta
+            # columna - se marca ahora para que quede protegida contra
+            # eliminacion desde el panel (solo desactivar/cambiar contraseña).
+            existing_default_admin.is_default_admin = True
+            db.commit()
 
         # Migrar usuarios viejos que todavía no tienen role_id (creados antes
         # del sistema de roles): se mapean por su antiguo campo role de texto.
@@ -133,6 +285,8 @@ def startup():
         network_gate.seed_default(db)
         block_attempts.seed_default_config(db)
         auth.seed_default_password_policy(db)
+        assets.seed_default_asset_types(db)
+        assets.migrate_device_types_into_asset_types(db)
     finally:
         db.close()
 
@@ -163,6 +317,17 @@ def _background_scheduler():
                 agents.check_offline(db)
             except Exception as e:
                 print(f"[CheckOffline] {e}")
+            # Excepciones de bloqueo vencidas (expires_at) - antes solo se
+            # purgaban/registraban en Eventos cuando alguien abria la
+            # pantalla de "Sitios bloqueados" (GET /api/blocked-sites), asi
+            # que si nadie la abria el dia que vencia, el evento quedaba
+            # "atrasado" hasta la proxima visita en vez de generarse el
+            # mismo dia. Enganchado aca corre cada ~15s sin depender de que
+            # alguien mire el panel.
+            try:
+                blocked_sites._purge_expired_sites(db)
+            except Exception as e:
+                print(f"[BlockedSitesExpiry] {e}")
             db.close()
         except Exception as e:
             print(f"[BackgroundScheduler] {e}")
@@ -183,6 +348,8 @@ app.include_router(block_reports.router)
 app.include_router(network_gate.router)
 app.include_router(block_attempts.router)
 app.include_router(headscale.router)
+app.include_router(assets.router)
+app.include_router(agent_uninstall_codes.router)
 
 # ── Static files ───────────────────────────────────────────────────────────
 static_path = Path("/app/static")
@@ -195,3 +362,19 @@ async def root():
     if index.exists():
         return HTMLResponse(index.read_text())
     return HTMLResponse("<h1>SmartMonitor v3</h1>")
+
+@app.get("/smartmonitor-ca.crt")
+async def download_ca_cert():
+    """Mismo certificado que ya sirve dns_blocker.py por HTTP plano en el
+    puerto 80 (ver tls_ca.ca_cert_pem) - esta copia va por HTTPS, detras de
+    nginx, con el dominio real. Descargar un .crt por HTTP directo a una IP
+    (sin dominio, sin cifrar) es un patron que la heuristica de varios
+    antivirus (Kaspersky confirmado) marca como sitio malintencionado -
+    los instaladores deberian preferir esta URL cuando el servidor
+    configurado sea un dominio con HTTPS valido."""
+    from tls_ca import ca_cert_pem
+    return Response(
+        content=ca_cert_pem(),
+        media_type="application/x-x509-ca-cert",
+        headers={"Content-Disposition": "attachment; filename=smartmonitor-ca.crt"},
+    )
