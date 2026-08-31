@@ -61,10 +61,16 @@ fi
 systemctl enable docker --quiet && systemctl start docker
 ok "Docker Compose: $(docker compose version --short)"
 
-# ─── 2. Verificar archivos ───────────────────────────────────────────────────
-step "2/4" "Verificando archivos"
+# ─── 2. Verificar archivos y configuración (.env) ───────────────────────────
+step "2/4" "Verificando archivos y variables de entorno"
 [ ! -f "$INSTALL_DIR/server/docker-compose.yml" ] && fail "No encuentro server/docker-compose.yml"
-ok "Archivos encontrados"
+
+if [ ! -f "$INSTALL_DIR/server/.env" ] && [ -f "$INSTALL_DIR/server/.env.example" ]; then
+  cp "$INSTALL_DIR/server/.env.example" "$INSTALL_DIR/server/.env"
+  info "Archivo server/.env creado desde plantilla (.env.example)"
+fi
+
+ok "Archivos y configuración listos"
 
 # ─── 3. Levantar servidor ────────────────────────────────────────────────────
 step "3/4" "Construyendo e iniciando SmartMonitor v3"
@@ -84,7 +90,7 @@ ok "Servidor activo"
 
 # ─── 4. Agente local ─────────────────────────────────────────────────────────
 step "4/4" "Instalando agente en este equipo"
-AGENT="$INSTALL_DIR/agents/linux/install-agent-linux.sh"
+AGENT="$INSTALL_DIR/agents/linux/src/install-agent-linux.sh"
 [ -f "$AGENT" ] && bash "$AGENT" localhost "$EQUIPO_NOMBRE" || true
 
 echo -e "\n${BOLD}${GREEN}╔══════════════════════════════════════════════╗${NC}"
@@ -96,7 +102,7 @@ echo -e "  ${BOLD}Contraseña:${NC}  Admin2024!"
 echo -e "  ${BOLD}Equipo:${NC}      $EQUIPO_NOMBRE (visible en ~30s)"
 echo ""
 echo -e "  ${BOLD}Agregar equipos Linux:${NC}"
-echo -e "  ${CYAN}sudo bash agents/linux/install-agent-linux.sh <IP> \"Nombre\"${NC}"
+echo -e "  ${CYAN}sudo bash agents/linux/src/install-agent-linux.sh <IP> \"Nombre\"${NC}"
 echo ""
 warn "Cambia la contraseña desde el panel de Usuarios después del primer acceso."
 echo ""
