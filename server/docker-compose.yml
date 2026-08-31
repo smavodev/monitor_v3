@@ -6,15 +6,15 @@ services:
     container_name: smartmonitor-db
     restart: unless-stopped
     environment:
-      POSTGRES_DB: smartmonitor
-      POSTGRES_USER: smartmonitor
-      POSTGRES_PASSWORD: SmartMonitor2024!
+      POSTGRES_DB: ${POSTGRES_DB:-smartmonitor}
+      POSTGRES_USER: ${POSTGRES_USER:-smartmonitor}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-SmartMonitor2024!}
     ports:
       - "127.0.0.1:5432:5432"
     volumes:
       - db_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U smartmonitor"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-smartmonitor}"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -27,7 +27,7 @@ services:
     ports:
       - "8090:8090"
     volumes:
-      - ./headscale-config:/etc/headscale
+      - ../config/headscale:/etc/headscale
       - headscale_data:/var/lib/headscale
 
   app:
@@ -36,15 +36,24 @@ services:
     restart: unless-stopped
     network_mode: host
     environment:
-      DATABASE_URL: postgresql://smartmonitor:SmartMonitor2024!@127.0.0.1:5432/smartmonitor
-      SECRET_KEY: cambiar-en-produccion-clave-secreta-larga
-      ADMIN_EMAIL: admin@smartmonitor.local
-      ADMIN_PASSWORD: Admin2024!
-      DNS_BLOCK_REDIRECT_IP: "172.27.142.107"
-      HEADSCALE_URL: "https://127.0.0.1:8090"
-      HEADSCALE_PUBLIC_URL: "https://172.27.142.107:8090"
-      HEADSCALE_API_KEY: ""
-      HEADSCALE_USER_ID: "1"
+      DATABASE_URL: postgresql://${POSTGRES_USER:-smartmonitor}:${POSTGRES_PASSWORD:-SmartMonitor2024!}@127.0.0.1:5432/${POSTGRES_DB:-smartmonitor}
+      SECRET_KEY: ${SECRET_KEY:-cambiar-en-produccion-clave-secreta-larga}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@smartmonitor.local}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-Admin2024!}
+      DNS_BLOCK_REDIRECT_IP: ${DNS_BLOCK_REDIRECT_IP:-127.0.0.1}
+      DNS_UPSTREAM: ${DNS_UPSTREAM:-1.1.1.1}
+      DOH_ENDPOINT_ENABLED: ${DOH_ENDPOINT_ENABLED:-true}
+      DNS_BLOCK_HTTP_PORT: ${DNS_BLOCK_HTTP_PORT:-80}
+      DNS_BLOCK_HTTPS_PORT: ${DNS_BLOCK_HTTPS_PORT:-443}
+      ADMIN_PANEL_DOMAIN: ${ADMIN_PANEL_DOMAIN:-}
+      HEADSCALE_URL: ${HEADSCALE_URL:-https://127.0.0.1:8090}
+      HEADSCALE_PUBLIC_URL: ${HEADSCALE_PUBLIC_URL:-https://127.0.0.1:8090}
+      HEADSCALE_API_KEY: ${HEADSCALE_API_KEY:-}
+      HEADSCALE_USER_ID: ${HEADSCALE_USER_ID:-1}
+      HEADSCALE_SERVER_TAILNET_IP: ${HEADSCALE_SERVER_TAILNET_IP:-}
+      ADMIN_TLS_CERT: ${ADMIN_TLS_CERT:-/data/tls/fullchain.pem}
+      ADMIN_TLS_KEY: ${ADMIN_TLS_KEY:-/data/tls/privkey.pem}
+      ADMIN_TLS_BIND: ${ADMIN_TLS_BIND:-127.0.0.1}
     depends_on:
       db:
         condition: service_healthy

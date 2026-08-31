@@ -1,25 +1,34 @@
+# Cache y entorno Python
 __pycache__/
 *.pyc
-.env
-agents/windows.zip
-
-
-*.sql,|
-backups/*
-.sql,
-
-.venv/,
-venv/,
+*.pyo
+.venv/
+venv/
 env/
 
-*.log,
-.env,
-.claude/,
-.vscode/
+# Variables de entorno y secretos (NUNCA SUBIR A GIT)
+.env
+*.env
+*.key
+*.pem
 
-*.key,
-*.pem,
-
-.claude
-
+# Backups y volcados SQL
+*.sql
+backups/*
 other/
+
+# Compilados de Windows y ejecutables
+agents/windows/src/dist/
+agents/windows/src/build/
+agents/windows/src/*.spec
+agents/windows/src/cloudflared.exe
+agents/windows.zip
+*.exe
+
+# Logs y carpetas de IDEs
+*.log
+.claude/
+.vscode/
+.idea/
+
+agents/windows/legacy/nuevo-por-compilar
